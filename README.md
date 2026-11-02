@@ -36,7 +36,6 @@ Se importa desde CDN en `index.html`, con una etiqueta `<link>` dentro de `<head
 - No coloques claves `service_role` ni `secret` en frontend/GitHub. `js/config.js` contiene únicamente claves públicas, protegidas mediante RLS.
 - Supabase no permite iniciar sesión por nombre de usuario de forma nativa: la transformación de nombre a email técnico requiere que las cuentas de Auth hayan sido provisionadas con esa misma convención.
 - Se requiere revisar/corregir el script de RLS original si se producen errores de política SQL. En particular, la política de INSERT de entregas del script anterior no debe intentar consultar `entregas.id` desde su `WITH CHECK`, y el código solo podrá funcionar si las funciones auxiliares de autorización existen y los perfiles coinciden con Auth.
-- No está implementado el alta de usuarios, inscripción a cursos, edición de cursos, publicación de avisos o flujo de recuperación de contraseña desde interfaz. El administrador puede preparar estos registros de forma segura en Supabase.
 - En la entrega de archivos se permite adjuntar un archivo por envío; se usa una carpeta privada `tareas-escolares` protegida por Storage RLS. Los enlaces firmados duran 5 minutos.
 - Prueba la seguridad con usuarios de rol diferente antes de usar datos reales de alumnas. Considera limitar los tipos y tamaños de archivos también en la configuración del bucket.
 - El total de tareas sin entregar mostrado en la vista estudiantil incluye actividades vencidas; para métricas exactas a gran escala se recomendaría una consulta SQL agregada.
@@ -44,3 +43,12 @@ Se importa desde CDN en `index.html`, con una etiqueta `<link>` dentro de `<head
 ## Recomendación para producción
 
 Registrar actividades administrativas mediante una Edge Function segura o backend privado; agregar auditoría, administración de usuarios y recuperación controlada de contraseñas. Para datos de menores aplica controles institucionales de privacidad, acceso mínimo y retención.
+
+## Versión 3 (estilo Classroom)
+
+Orden de instalación en Supabase > SQL Editor: script original → `ajuste-sql.sql` → `migracion-classroom.sql` → `migracion-v3.sql`.
+
+Edge Function `supabase/functions/gestionar-alumnas/index.ts`: publícala en Supabase > Edge Functions > Deploy a new function > Via Editor con el nombre `gestionar-alumnas` y desactiva "Verify JWT". La usan las docentes para crear cuentas de alumnas (sin correo) y cambiar contraseñas.
+
+- Docente: crear cursos (con código de clase), publicar y eliminar avisos, crear/editar/eliminar tareas con tipo, instrucciones y material adjunto, ver quién entregó y quién no, inscribir o quitar alumnas, crear cuentas y cambiar contraseñas.
+- Alumna: unirse a una clase con código, ver detalle de cada tarea con instrucciones y material, entregar varios archivos, quitar archivos antes de la calificación, ver su nota y el comentario de la docente.
