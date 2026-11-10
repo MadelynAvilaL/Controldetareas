@@ -21,3 +21,25 @@ button.sidebar-profile{background:transparent;border:0;border-top:1px solid #fff
 button.sidebar-profile:hover{background:#ffffff0d}
 button.top-avatar{cursor:pointer}
 .clave-cell{color:var(--purple);font-family:Outfit,sans-serif;font-size:1.05rem}
+
+/* ===== v5: portadas, nota acumulada, grupos, calificación rápida ===== */
+.course-cover{height:130px;background-size:cover;background-position:center;border-bottom:1px solid var(--line)}
+.acc-box{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:#f7f6ff;border:1px solid #ece8ff}
+.acc{font-weight:800;font-family:Outfit,sans-serif;font-size:1rem}
+.acc-big{font:800 2rem Outfit,sans-serif;line-height:1}
+.acc-good{color:#2f9e6b}.acc-mid{color:#c98a2e}.acc-low{color:#d0503f}
+.quick-grade{display:flex;gap:6px;align-items:center}
+.quick-grade input[data-q-nota]{width:90px;flex-shrink:0;font-weight:700}
+.quick-grade input[data-q-com]{min-width:140px}
+.quick-grade .form-control{padding:6px 10px}
+.file-mini{font-size:.82rem;color:var(--purple);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block}
+.grade-table td{vertical-align:middle}
+.sep-row td{background:#f7f7fb;font-size:.8rem;font-weight:700;color:#7a8191}
+.group-pick{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:12px}
+.group-option{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;margin:0}
+.group-option:last-child{border-bottom:0}
+.group-option:hover{background:#faf9ff}
+.group-option.taken{opacity:.55;cursor:not-allowed}
+@media(max-width:575px){.quick-grade{flex-wrap:wrap}.quick-grade input[data-q-com]{min-width:0;flex:1}}
+.choose-group{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+.choose-group.mine{border-color:#9fd9bf;background:#f2fbf7}

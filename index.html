@@ -66,8 +66,10 @@
     <div class="modal-body">
       <input type="hidden" name="id">
       <div class="row g-3">
-        <div class="col-md-8"><label class="form-label">Curso</label><select class="form-select" name="curso_id" id="taskCourse" required></select></div>
-        <div class="col-md-4"><label class="form-label">Tipo</label><select class="form-select" name="tipo"><option value="tarea">Tarea</option><option value="proyecto">Proyecto</option><option value="practica">Práctica</option><option value="investigacion">Investigación</option></select></div>
+        <div class="col-md-6"><label class="form-label">Curso</label><select class="form-select" name="curso_id" id="taskCourse" required></select></div>
+        <div class="col-6 col-md-3"><label class="form-label">Tipo</label><select class="form-select" name="tipo"><option value="tarea">Tarea</option><option value="proyecto">Proyecto</option><option value="practica">Práctica</option><option value="investigacion">Investigación</option><option value="exposicion">Exposición</option></select></div>
+        <div class="col-6 col-md-3"><label class="form-label">Se trabaja</label><select class="form-select" name="modalidad"><option value="individual">Individual</option><option value="grupal">En grupo</option></select></div>
+        <div class="col-12 d-none" id="taskExpoHint"><div class="alert alert-info small mb-0"><i class="bi bi-easel me-1"></i>En una exposición las alumnas solo suben su presentación, y tú las calificas mientras exponen desde la tarea, aunque no hayan subido nada.</div></div>
         <div class="col-12"><label class="form-label">Título</label><input class="form-control" name="titulo" maxlength="200" required></div>
         <div class="col-12"><label class="form-label">Descripción</label><textarea class="form-control" name="descripcion" rows="2" required placeholder="Resumen corto de la actividad"></textarea></div>
         <div class="col-12"><label class="form-label">Instrucciones (opcional)</label><textarea class="form-control" name="instrucciones" rows="4" placeholder="Pasos, criterios de evaluación, formato de entrega..."></textarea></div>
@@ -85,8 +87,9 @@
     <div class="modal-header"><h5 class="modal-title">Entregar actividad</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body">
       <p class="text-muted" id="submitTaskTitle"></p>
-      <label class="form-label">Comentario o respuesta</label><textarea class="form-control mb-3" name="contenido" rows="3" placeholder="Escribe aquí tu respuesta (opcional)"></textarea>
-      <label class="form-label">Enlace a tu trabajo (opcional)</label><input class="form-control mb-3" type="url" name="enlace" placeholder="https://...">
+      <div id="submitExpoHint" class="alert alert-info small d-none"><i class="bi bi-easel me-1"></i>Sube tu presentación (PowerPoint o PDF). La nota la pone tu docente cuando expongas.</div>
+      <div id="submitTextFields"><label class="form-label">Comentario o respuesta</label><textarea class="form-control mb-3" name="contenido" rows="3" placeholder="Escribe aquí tu respuesta (opcional)"></textarea>
+      <label class="form-label">Enlace a tu trabajo (opcional)</label><input class="form-control mb-3" type="url" name="enlace" placeholder="https://..."></div>
       <div id="submitExistingWrap" class="mb-3 d-none"><label class="form-label">Archivos que ya entregaste</label><div id="submitExistingFiles"></div></div>
       <label class="form-label">Adjuntar archivos (opcional, máx. 10 MB cada uno)</label><input class="form-control" type="file" name="archivo" id="submissionFile" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.png,.jpg,.jpeg,.txt,.zip">
     </div>
@@ -107,7 +110,9 @@
       <input type="hidden" name="id">
       <label class="form-label">Nombre del curso</label><input class="form-control mb-3" name="nombre" maxlength="150" required placeholder="Ej. Segundo Básico A">
       <div class="row g-3 mb-3"><div class="col-7"><label class="form-label">Grado</label><input class="form-control" name="grado" maxlength="50" required placeholder="Ej. Segundo Básico"></div><div class="col-5"><label class="form-label">Sección</label><input class="form-control" name="seccion" maxlength="20" required placeholder="Ej. A"></div></div>
-      <label class="form-label">Descripción (opcional)</label><textarea class="form-control" name="descripcion" rows="2" placeholder="Ej. Computación"></textarea>
+      <label class="form-label">Descripción (opcional)</label><textarea class="form-control mb-3" name="descripcion" rows="2" placeholder="Ej. Computación"></textarea>
+      <label class="form-label">Foto de portada (opcional)</label><input class="form-control" type="file" id="coverInput" accept="image/png,image/jpeg,image/webp"><div class="form-text">Se recorta en formato horizontal.</div>
+      <div class="form-check mt-2 d-none" id="coverRemoveWrap"><input class="form-check-input" type="checkbox" id="coverRemove"><label class="form-check-label" for="coverRemove">Quitar la portada actual</label></div>
       <p class="small muted mt-3 mb-0" id="courseModalHint"><i class="bi bi-info-circle me-1"></i>Al crearlo se genera un código de clase para que las alumnas se unan.</p>
     </div>
     <div class="modal-footer"><button type="button" class="btn btn-outline-danger me-auto d-none" id="archiveCourseBtn"><i class="bi bi-archive me-1"></i>Archivar curso</button><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-primary" type="submit" id="courseSubmitBtn">Crear curso</button></div>
@@ -161,6 +166,24 @@
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-primary" type="submit" id="passwordBtn">Guardar contraseña</button></div>
   </form></div></div>
 
+
+  <!-- Grupo (docente) -->
+  <div class="modal fade" id="groupModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable"><form class="modal-content" id="groupForm">
+    <div class="modal-header"><h5 class="modal-title" id="groupModalTitle">Nuevo grupo</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+      <input type="hidden" name="id">
+      <label class="form-label">Nombre del grupo</label><input class="form-control mb-3" name="nombre" maxlength="100" required placeholder="Ej. Grupo 1">
+      <div class="d-flex justify-content-between align-items-center mb-2"><label class="form-label mb-0">Integrantes</label><span class="small muted" id="groupCount">0 seleccionadas</span></div>
+      <div id="groupMembers" class="group-pick"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-primary" type="submit" id="groupSubmitBtn">Guardar grupo</button></div>
+  </form></div></div>
+
+  <!-- Elegir grupo (alumna) -->
+  <div class="modal fade" id="chooseGroupModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title" id="chooseGroupTitle">Elegir grupo</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body" id="chooseGroupBody"></div>
+  </div></div></div>
 
   <!-- Mi perfil / foto -->
   <div class="modal fade" id="profileModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-sm"><div class="modal-content">
