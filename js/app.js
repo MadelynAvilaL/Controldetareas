@@ -7,7 +7,20 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, LOGIN_DOMAIN } from './config.js';
 const BUCKET = 'tareas-escolares';
 const ADMIN_FN = 'gestionar-alumnas';
 const MAX_FILE = 10 * 1024 * 1024;
-const ALLOWED_EXT = ['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'txt', 'zip'];
+// Formatos permitidos y su tipo (para que el archivo se guarde con el tipo correcto)
+const MIME = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  txt: 'text/plain', zip: 'application/zip',
+};
+const ALLOWED_EXT = Object.keys(MIME);
+const mimeFor = (name) => MIME[(name.split('.').pop() || '').toLowerCase()] || 'application/octet-stream';
 const TIPOS = { tarea: 'Tarea', proyecto: 'Proyecto', practica: 'Práctica', investigacion: 'Investigación' };
 
 const $ = (s) => document.querySelector(s);
@@ -23,6 +36,9 @@ let me = null;
 let courses = [], tasks = [], submissions = [], grades = [], notices = [], enrollments = [], files = [], materials = [];
 let view = 'inicio', viewArg = null, renderToken = 0;
 let submittingTask = null, gradingSubmission = null, studentsCourse = null;
+let hasV4 = true;                 // ¿ya se ejecutó migracion-v4 (clave y foto)?
+const photoUrls = new Map();      // ruta de foto → enlace firmado
+const PHOTO_BUCKET = 'fotos-perfil';
 
 function notify(message, kind = 'success', delay = 4500) {
   const el = document.createElement('div');
@@ -52,8 +68,10 @@ const mySubmission = (taskId) => submissions.find((s) => s.tarea_id === taskId &
 const gradeFor = (subId) => grades.find((g) => g.entrega_id === subId);
 const filesFor = (subId) => files.filter((f) => f.entrega_id === subId);
 const materialsFor = (taskId) => materials.filter((m) => m.tarea_id === taskId);
+const listName = (u) => (u ? `${u.apellido}, ${u.nombre}` : 'Alumna');
+const byClave = (a, b) => (a?.clave ?? 9999) - (b?.clave ?? 9999) || listName(a).localeCompare(listName(b), 'es');
 const studentsOf = (courseId) => enrollments.filter((e) => e.curso_id === courseId)
-  .sort((a, b) => fullName(a.usuarios).localeCompare(fullName(b.usuarios), 'es'));
+  .sort((a, b) => byClave(a.usuarios, b.usuarios));
 const isExpired = (t) => new Date(t.fecha_limite) < new Date();
 const isLate = (s) => { const t = task(s.tarea_id); return t && new Date(s.fecha_entrega) > new Date(t.fecha_limite); };
 const tipoBadge = (t) => badge(TIPOS[t.tipo] || 'Tarea', 'pill-blue');
@@ -128,6 +146,36 @@ async function callAdmin(body) {
   return data;
 }
 
+// Fotos de perfil (bucket privado, enlaces firmados de 1 hora)
+async function loadPhotos(users) {
+  if (!hasV4) return;
+  const paths = [...new Set(users.map((u) => u?.foto).filter((p) => p && !photoUrls.has(p)))];
+  if (!paths.length) return;
+  const { data } = await db.storage.from(PHOTO_BUCKET).createSignedUrls(paths, 3600);
+  for (const d of data || []) if (d.signedUrl) photoUrls.set(d.path, d.signedUrl);
+}
+function avatarHtml(u, cls = 'avatar avatar-sm') {
+  const url = u?.foto && photoUrls.get(u.foto);
+  return url
+    ? `<span class="${cls} avatar-photo"><img src="${esc(url)}" alt=""></span>`
+    : `<span class="${cls}">${esc((u?.nombre || '?').charAt(0).toUpperCase())}</span>`;
+}
+function paintMyAvatar() {
+  const url = me?.foto && photoUrls.get(me.foto);
+  for (const el of [$('#sidebarInitial'), $('#topInitial'), $('#profilePhoto')]) {
+    el.classList.toggle('avatar-photo', !!url);
+    el.innerHTML = url ? `<img src="${esc(url)}" alt="">` : esc(me.nombre.charAt(0).toUpperCase());
+  }
+}
+async function resizeImage(file, size = 256) {
+  const bmp = await createImageBitmap(file);
+  const s = Math.min(bmp.width, bmp.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  canvas.getContext('2d').drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, size, size);
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+}
+
 // =====================================================================
 // SESIÓN Y DATOS
 // =====================================================================
@@ -136,7 +184,7 @@ function showApp() {
   $('#appShell').classList.remove('d-none');
   $('#sidebarName').textContent = fullName(me);
   $('#sidebarRole').textContent = isTeacher() ? 'Docente' : 'Alumna';
-  $('#sidebarInitial').textContent = $('#topInitial').textContent = me.nombre.charAt(0).toUpperCase();
+  paintMyAvatar();
   $('#todayLabel').textContent = today;
   document.querySelectorAll('[data-teacher-only]').forEach((el) => el.classList.toggle('d-none', !isTeacher()));
 }
@@ -148,13 +196,19 @@ async function restore() {
   if (session) await loadProfile(session.user.id);
 }
 async function loadProfile(id) {
-  const { data, error } = await db.from('usuarios').select('id,usuario,nombre,apellido,rol,activo').eq('id', id).single();
+  let { data, error } = await db.from('usuarios').select('id,usuario,nombre,apellido,rol,activo,clave,foto').eq('id', id).single();
+  if (error && /clave|foto|column/i.test(error.message)) {
+    // Aún no se ejecutó migracion-v4: seguir sin clave ni foto
+    hasV4 = false;
+    ({ data, error } = await db.from('usuarios').select('id,usuario,nombre,apellido,rol,activo').eq('id', id).single());
+  }
   if (error || !data || !data.activo) {
     await db.auth.signOut(); showLogin();
     notify('Tu cuenta no tiene perfil activo. Consulta a tu docente.', 'warning');
     return;
   }
   me = data; view = 'inicio'; viewArg = null;
+  await loadPhotos([me]);
   showApp();
   await refresh();
 }
@@ -174,7 +228,7 @@ async function refresh() {
       const [tr, nr, er] = await Promise.all([
         db.from('tareas').select('*').in('curso_id', ids).order('fecha_limite', { ascending: true }),
         db.from('anuncios').select('*').in('curso_id', ids).order('creado_en', { ascending: false }),
-        db.from('inscripciones').select('id,curso_id,alumna_id,usuarios:alumna_id(id,usuario,nombre,apellido)').in('curso_id', ids),
+        db.from('inscripciones').select(`id,curso_id,alumna_id,usuarios:alumna_id(id,usuario,nombre,apellido${hasV4 ? ',clave,foto' : ''})`).in('curso_id', ids),
       ]);
       for (const r of [tr, nr, er]) if (r.error) throw r.error;
       tasks = tr.data || []; notices = nr.data || []; enrollments = er.data || [];
@@ -245,7 +299,7 @@ function courseCard(c) {
     ${code}
     <div class="d-flex flex-wrap gap-2">
       <button class="btn btn-outline-primary btn-sm" data-open-course="${esc(c.id)}">Tareas (${nTasks}) <i class="bi bi-arrow-right ms-1"></i></button>
-      ${teacher ? `<button class="btn btn-outline-secondary btn-sm" data-course-students="${esc(c.id)}"><i class="bi bi-people me-1"></i>Alumnas (${nStudents})</button>` : ''}
+      ${teacher ? `<button class="btn btn-outline-secondary btn-sm" data-course-students="${esc(c.id)}"><i class="bi bi-people me-1"></i>Alumnas (${nStudents})</button><button class="btn btn-outline-secondary btn-sm" data-edit-course="${esc(c.id)}" title="Editar curso"><i class="bi bi-pencil"></i></button>` : ''}
     </div>
   </div></div></div>`;
 }
@@ -327,7 +381,7 @@ async function renderTaskDetail(id) {
       const g = s && gradeFor(s.id);
       const status = !s ? (isExpired(t) ? badge('No entregó', 'pill-orange') : badge('Pendiente', 'pill-blue'))
         : g ? badge(`${g.nota}/${t.puntos_maximos}`, 'pill-green') : badge('Por calificar', 'pill-purple');
-      return `<tr><td class="fw-semibold">${esc(fullName(en.usuarios))}</td><td class="small">${s ? esc(fmt(s.fecha_entrega)) : '—'}</td><td>${status} ${s && isLate(s) ? badge('Tardía', 'pill-orange') : ''}</td><td>${s ? `<button class="btn btn-sm btn-outline-primary" data-view-submission="${esc(s.id)}">Abrir</button>` : ''}</td></tr>`;
+      return `<tr><td class="fw-semibold"><span class="muted me-2">${esc(en.usuarios?.clave ?? '')}</span>${esc(listName(en.usuarios))}</td><td class="small">${s ? esc(fmt(s.fecha_entrega)) : '—'}</td><td>${status} ${s && isLate(s) ? badge('Tardía', 'pill-orange') : ''}</td><td>${s ? `<button class="btn btn-sm btn-outline-primary" data-view-submission="${esc(s.id)}">Abrir</button>` : ''}</td></tr>`;
     });
     side = `<div class="surface-card"><h6 class="fw-bold mb-3">Trabajos de las alumnas</h6>${rows.length
       ? `<div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Alumna</th><th>Entrega</th><th>Estado</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`
@@ -397,7 +451,7 @@ async function renderSubmissionDetail(id) {
       <button class="btn btn-primary" data-grade="${esc(s.id)}">${g ? 'Editar calificación' : 'Calificar entrega'}</button></div>`;
 }
 
-function renderStudents() {
+async function renderStudents() {
   setTitle('Alumnas');
   if (!isTeacher()) { navigate('inicio'); return; }
   const header = (extra = '') => `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
@@ -408,12 +462,15 @@ function renderStudents() {
   const c = course(studentsCourse);
   const list = studentsOf(c.id);
   const courseTasks = tasks.filter((t) => t.curso_id === c.id);
+  const token = renderToken;
+  await loadPhotos(list.map((en) => en.usuarios));
+  if (token !== renderToken) return;
 
   const rows = list.map((en) => {
     const subs = submissions.filter((s) => s.alumna_id === en.alumna_id && courseTasks.some((t) => t.id === s.tarea_id));
     const pct = subs.map((s) => { const g = gradeFor(s.id); const t = task(s.tarea_id); return g && t ? (g.nota / t.puntos_maximos) * 100 : null; }).filter((x) => x !== null);
     const avg = pct.length ? `${Math.round(pct.reduce((a, b) => a + b, 0) / pct.length)}%` : '—';
-    return `<tr><td class="fw-semibold">${esc(fullName(en.usuarios))}</td><td><code>${esc(en.usuarios?.usuario)}</code></td><td>${subs.length}/${courseTasks.length}</td><td>${avg}</td>
+    return `<tr><td class="fw-bold text-center clave-cell">${esc(en.usuarios?.clave ?? '—')}</td><td><div class="d-flex align-items-center gap-2">${avatarHtml(en.usuarios)}<span class="fw-semibold">${esc(listName(en.usuarios))}</span></div></td><td><code>${esc(en.usuarios?.usuario)}</code></td><td>${subs.length}/${courseTasks.length}</td><td>${avg}</td>
       <td class="text-end text-nowrap"><button class="btn btn-sm btn-outline-secondary" data-reset-pass="${esc(en.alumna_id)}" title="Cambiar contraseña"><i class="bi bi-key"></i></button>
       <button class="btn btn-sm btn-outline-danger" data-remove-enroll="${esc(en.id)}" title="Quitar del curso"><i class="bi bi-person-dash"></i></button></td></tr>`;
   });
@@ -422,7 +479,7 @@ function renderStudents() {
     <div class="surface-card mb-3 d-flex flex-wrap align-items-center gap-3">${select}
       ${c.codigo_clase ? `<div class="class-code"><span class="small muted">Código de clase</span><strong>${esc(c.codigo_clase)}</strong><button class="btn btn-sm btn-link p-0" data-copy-code="${esc(c.codigo_clase)}" title="Copiar"><i class="bi bi-copy"></i></button></div>` : ''}
       <span class="muted small ms-auto">${list.length} alumnas</span></div>
-    <div class="surface-card table-responsive">${rows.length ? `<table class="table table-hover align-middle mb-0"><thead><tr><th>Alumna</th><th>Usuario</th><th>Entregas</th><th>Promedio</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table>` : empty('Este curso no tiene alumnas. Comparte el código de clase o inscríbelas tú.')}</div>`;
+    <div class="surface-card table-responsive">${rows.length ? `<table class="table table-hover align-middle mb-0"><thead><tr><th class="text-center" style="width:70px">Clave</th><th>Alumna</th><th>Usuario</th><th>Entregas</th><th>Promedio</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table>` : empty('Este curso no tiene alumnas. Comparte el código de clase o inscríbelas tú.')}</div>`;
 }
 
 function renderNotices() {
@@ -495,6 +552,24 @@ function openGradeModal(subId) {
   modal('#gradeModal').show();
 }
 
+function openCourseModal(courseId = null) {
+  const f = $('#courseForm');
+  f.reset();
+  const c = courseId ? course(courseId) : null;
+  f.elements.id.value = c?.id || '';
+  $('#courseModalTitle').textContent = c ? 'Editar curso' : 'Crear curso';
+  $('#courseSubmitBtn').textContent = c ? 'Guardar cambios' : 'Crear curso';
+  $('#courseModalHint').classList.toggle('d-none', !!c);
+  $('#archiveCourseBtn').classList.toggle('d-none', !c);
+  if (c) {
+    f.elements.nombre.value = c.nombre;
+    f.elements.grado.value = c.grado;
+    f.elements.seccion.value = c.seccion;
+    f.elements.descripcion.value = c.descripcion || '';
+  }
+  modal('#courseModal').show();
+}
+
 function openNoticeModal() {
   if (!courses.length) { notify('Primero crea un curso.', 'warning'); return; }
   $('#noticeForm').reset();
@@ -532,9 +607,9 @@ async function uploadMaterials(taskId, list) {
   const failed = [];
   for (const file of list) {
     const path = `material/${taskId}/${crypto.randomUUID()}-${safeName(file.name)}`;
-    const up = await db.storage.from(BUCKET).upload(path, file, { upsert: false, contentType: file.type || undefined });
+    const up = await db.storage.from(BUCKET).upload(path, file, { upsert: false, contentType: mimeFor(file.name) });
     if (up.error) { failed.push(`${file.name}: ${up.error.message}`); continue; }
-    const meta = await db.from('archivos_tarea').insert({ tarea_id: taskId, nombre_archivo: file.name, ruta_storage: path, tipo_archivo: file.type || null, tamano_bytes: file.size });
+    const meta = await db.from('archivos_tarea').insert({ tarea_id: taskId, nombre_archivo: file.name, ruta_storage: path, tipo_archivo: mimeFor(file.name), tamano_bytes: file.size });
     if (meta.error) { failed.push(`${file.name}: ${meta.error.message}`); await db.storage.from(BUCKET).remove([path]); }
   }
   return failed;
@@ -638,7 +713,7 @@ $('#mainContent').addEventListener('click', (e) => {
   if ((b = el('[data-action]'))) {
     const a = b.dataset.action;
     if (a === 'new-task') openTaskModal(null, view === 'tareas' ? viewArg : null);
-    else if (a === 'new-course') { $('#courseForm').reset(); modal('#courseModal').show(); }
+    else if (a === 'new-course') openCourseModal();
     else if (a === 'join') { $('#joinForm').reset(); modal('#joinModal').show(); }
     else if (a === 'new-notice') openNoticeModal();
     else if (a === 'enroll') openEnrollModal();
@@ -654,6 +729,7 @@ $('#mainContent').addEventListener('click', (e) => {
   if ((b = el('[data-reset-pass]'))) return openPasswordModal(b.dataset.resetPass);
   if ((b = el('[data-grade]'))) return openGradeModal(b.dataset.grade);
   if ((b = el('[data-view-submission]'))) return navigate('entrega', b.dataset.viewSubmission);
+  if ((b = el('[data-edit-course]'))) return openCourseModal(b.dataset.editCourse);
   if ((b = el('[data-course-students]'))) { studentsCourse = b.dataset.courseStudents; return navigate('alumnas'); }
   if ((b = el('[data-open-course]'))) return navigate('tareas', b.dataset.openCourse);
   if ((b = el('[data-copy-code]'))) {
@@ -669,6 +745,58 @@ $('#mainContent').addEventListener('change', (e) => {
   if (e.target.id === 'studentsCourseSelect') { studentsCourse = e.target.value; renderStudents(); }
   if (e.target.id === 'taskCourseFilter') navigate('tareas', e.target.value || null);
 });
+
+// Mi perfil y foto
+function openProfileModal() {
+  $('#profileName').textContent = fullName(me);
+  $('#profileInfo').textContent = `${me.usuario} · ${isTeacher() ? 'Docente' : 'Alumna'}${me.clave ? ` · Clave ${me.clave}` : ''}`;
+  $('#profileNote').textContent = isTeacher() ? 'Tu foto la ven tus alumnas.' : 'Tu foto solo la ven tú y tus docentes.';
+  $('#photoRemoveBtn').classList.toggle('d-none', !me.foto);
+  paintMyAvatar();
+  modal('#profileModal').show();
+}
+document.addEventListener('click', (e) => { if (e.target.closest('[data-open-profile]')) openProfileModal(); });
+$('#photoPickBtn').onclick = () => {
+  if (!hasV4) return notify('Primero ejecuta migracion-v4-clave-foto.sql en Supabase.', 'warning');
+  $('#photoInput').click();
+};
+$('#photoInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) return notify('Elige una imagen (JPG o PNG).', 'warning');
+  await busy($('#photoPickBtn'), async () => {
+    try {
+      const blob = await resizeImage(file);
+      const path = `${me.id}/${Date.now()}.jpg`;
+      const up = await db.storage.from(PHOTO_BUCKET).upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+      if (up.error) throw up.error;
+      const r = await db.from('usuarios').update({ foto: path }).eq('id', me.id);
+      if (r.error) { await db.storage.from(PHOTO_BUCKET).remove([path]); throw r.error; }
+      const old = me.foto;
+      me.foto = path;
+      if (old) await db.storage.from(PHOTO_BUCKET).remove([old]);
+      await loadPhotos([me]);
+      paintMyAvatar();
+      $('#photoRemoveBtn').classList.remove('d-none');
+      notify('Foto actualizada.');
+    } catch (err) {
+      console.error(err);
+      notify(`No se pudo guardar la foto: ${err.message}`, 'danger');
+    }
+  });
+});
+$('#photoRemoveBtn').onclick = async () => {
+  if (!me.foto || !confirm('¿Quitar tu foto de perfil?')) return;
+  const old = me.foto;
+  const r = await db.from('usuarios').update({ foto: null }).eq('id', me.id);
+  if (r.error) return notify(errMsg(r.error), 'danger');
+  await db.storage.from(PHOTO_BUCKET).remove([old]);
+  me.foto = null;
+  paintMyAvatar();
+  $('#photoRemoveBtn').classList.add('d-none');
+  notify('Foto quitada.');
+};
 
 // Quitar archivo desde la ventana de entrega
 $('#submitExistingFiles').addEventListener('click', (e) => {
@@ -737,9 +865,9 @@ $('#submitForm').addEventListener('submit', async (e) => {
     const failed = [];
     for (const file of newFiles) {
       const path = `${me.id}/${delivery.id}/${crypto.randomUUID()}-${safeName(file.name)}`;
-      const up = await db.storage.from(BUCKET).upload(path, file, { upsert: false, contentType: file.type || undefined });
+      const up = await db.storage.from(BUCKET).upload(path, file, { upsert: false, contentType: mimeFor(file.name) });
       if (up.error) { failed.push(`${file.name}: ${up.error.message}`); continue; }
-      const meta = await db.from('archivos_entrega').insert({ entrega_id: delivery.id, nombre_archivo: file.name, ruta_storage: path, tipo_archivo: file.type || null, tamano_bytes: file.size });
+      const meta = await db.from('archivos_entrega').insert({ entrega_id: delivery.id, nombre_archivo: file.name, ruta_storage: path, tipo_archivo: mimeFor(file.name), tamano_bytes: file.size });
       if (meta.error) { failed.push(`${file.name}: ${meta.error.message}`); await db.storage.from(BUCKET).remove([path]); }
     }
     modal('#submitModal').hide();
@@ -766,18 +894,37 @@ $('#gradeForm').addEventListener('submit', async (e) => {
   await refresh();
 });
 
-// Crear curso
+// Crear / editar curso
 $('#courseForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  const r = await db.from('cursos').insert({
+  const id = f.get('id');
+  const payload = {
     nombre: f.get('nombre').trim(), grado: f.get('grado').trim(), seccion: f.get('seccion').trim(),
-    descripcion: f.get('descripcion').trim() || null, docente_id: me.id,
-  }).select().single();
+    descripcion: f.get('descripcion').trim() || null,
+  };
+  await busy($('#courseSubmitBtn'), async () => {
+    const r = id
+      ? await db.from('cursos').update(payload).eq('id', id).select().single()
+      : await db.from('cursos').insert({ ...payload, docente_id: me.id }).select().single();
+    if (r.error) return notify(errMsg(r.error), 'danger');
+    modal('#courseModal').hide();
+    if (id) notify('Curso actualizado.');
+    else notify(r.data.codigo_clase ? `Curso creado. Código de clase: ${r.data.codigo_clase}` : 'Curso creado.', 'success', 8000);
+    if (!id) { view = 'cursos'; viewArg = null; }
+    await refresh();
+  });
+});
+
+// Archivar curso (deja de verse, pero no se borra nada)
+$('#archiveCourseBtn').addEventListener('click', async () => {
+  const id = $('#courseForm').elements.id.value;
+  const c = course(id);
+  if (!c || !confirm(`¿Archivar "${c.nombre}"?\n\nYa no aparecerá para ti ni para las alumnas. Las tareas, entregas y notas se conservan en la base de datos.`)) return;
+  const r = await db.from('cursos').update({ activo: false }).eq('id', id);
   if (r.error) return notify(errMsg(r.error), 'danger');
   modal('#courseModal').hide();
-  notify(r.data.codigo_clase ? `Curso creado. Código de clase: ${r.data.codigo_clase}` : 'Curso creado.', 'success', 8000);
-  view = 'cursos'; viewArg = null;
+  notify('Curso archivado.');
   await refresh();
 });
 

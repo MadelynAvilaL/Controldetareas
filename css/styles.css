@@ -12,3 +12,12 @@
 .grade-value{font:800 2.2rem Outfit,sans-serif;color:#2f9e6b;line-height:1.1}.grade-value span{font-size:1rem;color:var(--muted);font-weight:500}
 .code-input{letter-spacing:.3em;font-family:Outfit,sans-serif;text-align:center}
 .min-w-0{min-width:0}
+
+/* ===== v4: fotos y clave ===== */
+.avatar-photo{padding:0;overflow:hidden;background:#e8e4ff}.avatar-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.avatar-sm{height:34px;width:34px;border-radius:50%;font-size:.85rem;display:inline-grid;place-items:center;flex-shrink:0;background:#e8e4ff;color:#6757d5;font-weight:800}
+.avatar-xl{height:110px;width:110px;border-radius:50%;font-size:2.6rem}
+button.sidebar-profile{background:transparent;border:0;border-top:1px solid #ffffff1c;color:inherit;border-radius:0}
+button.sidebar-profile:hover{background:#ffffff0d}
+button.top-avatar{cursor:pointer}
+.clave-cell{color:var(--purple);font-family:Outfit,sans-serif;font-size:1.05rem}
