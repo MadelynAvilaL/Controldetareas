@@ -42,6 +42,7 @@ let groups = [], members = [];    // grupos y sus integrantes
 let studentsTab = 'lista', studentsSort = 'clave';
 let editingGroup = null;
 let choosingCourse = null;
+let entregasTab = 'resumen', dashCourse = '', dashBin = null;
 const hasV6 = (c) => c && 'grupos_abiertos' in c;  // ¿ya se ejecutó migracion-v6?
 const COVER_BUCKET = 'portadas-cursos';
 const photoUrls = new Map();      // ruta de foto → enlace firmado
@@ -594,14 +595,137 @@ async function quickGrade(btn) {
 }
 
 function renderSubmissions() {
-  setTitle('Entregas recibidas');
+  setTitle('Entregas', 'Mi espacio');
   if (!isTeacher()) { navigate('inicio'); return; }
-  const rows = submissions.filter(hasWork).map((s) => {
+  const tabs = `<div class="btn-group mb-4" role="group">
+    <button class="btn btn-sm ${entregasTab === 'resumen' ? 'btn-primary' : 'btn-outline-primary'}" data-entregas-tab="resumen"><i class="bi bi-bar-chart me-1"></i>Resumen</button>
+    <button class="btn btn-sm ${entregasTab === 'lista' ? 'btn-primary' : 'btn-outline-primary'}" data-entregas-tab="lista"><i class="bi bi-inboxes me-1"></i>Lista de entregas</button></div>`;
+  if (entregasTab === 'resumen') { $('#mainContent').innerHTML = tabs + dashboardHtml(); return; }
+  const list = submissions.filter(hasWork).filter((s) => !dashCourse || task(s.tarea_id)?.curso_id === dashCourse);
+  const rows = list.map((s) => {
     const g = gradeFor(s.id);
     return `<tr><td class="fw-semibold">${esc(studentName(s.alumna_id))}</td><td>${esc(task(s.tarea_id)?.titulo || 'Tarea')}<div class="small muted">${esc(courseName(task(s.tarea_id)?.curso_id))}</div></td><td class="small">${esc(fmt(s.fecha_entrega))}</td><td>${g ? badge('Calificada', 'pill-green') : badge('Por revisar', 'pill-orange')} ${isLate(s) ? badge('Tardía', 'pill-orange') : ''}</td><td><button class="btn btn-sm btn-outline-primary" data-view-submission="${esc(s.id)}">Abrir</button></td></tr>`;
   });
-  $('#mainContent').innerHTML = `<div class="mb-4"><h4 class="section-heading">Trabajos de tus alumnas</h4><p class="muted">Revisa, abre los archivos y registra una calificación.</p></div>
+  $('#mainContent').innerHTML = tabs + `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><div><h4 class="section-heading mb-1">Trabajos de tus alumnas</h4><p class="muted mb-0">Revisa, abre los archivos y registra una calificación.</p></div>${dashCourseSelect()}</div>
     <div class="surface-card table-responsive">${rows.length ? `<table class="table table-hover align-middle mb-0"><thead><tr><th>Alumna</th><th>Actividad</th><th>Fecha</th><th>Estado</th><th>Revisar</th></tr></thead><tbody>${rows.join('')}</tbody></table>` : empty('Las alumnas todavía no han enviado trabajos.')}</div>`;
+}
+
+// ===================== RESUMEN (dashboard de la docente) =====================
+const BINS = [
+  { key: 'b0', label: '0–59', min: 0, max: 60 },
+  { key: 'b60', label: '60–69', min: 60, max: 70 },
+  { key: 'b70', label: '70–79', min: 70, max: 80 },
+  { key: 'b80', label: '80–89', min: 80, max: 90 },
+  { key: 'b90', label: '90–100', min: 90, max: 1000 },
+  { key: 'none', label: 'Sin nota aún' },
+];
+const binOf = (pct) => (pct === null ? BINS[5] : BINS.find((b) => b.min !== undefined && pct >= b.min && pct < b.max));
+function dashCourseSelect() {
+  return `<select class="form-select form-select-sm" id="dashCourse" style="width:auto;min-width:240px" aria-label="Filtrar por curso">
+    <option value="">Todos los cursos</option>${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === dashCourse ? 'selected' : ''}>${esc(c.nombre)} · ${esc(c.grado)} ${esc(c.seccion)}</option>`).join('')}</select>`;
+}
+function dashData() {
+  if (dashCourse && !course(dashCourse)) dashCourse = '';
+  const cs = dashCourse ? [course(dashCourse)] : courses;
+  const ids = new Set(cs.map((c) => c.id));
+  const ts = tasks.filter((t) => ids.has(t.curso_id) && t.publicada);
+  // Una fila por alumna (si está en varios cursos se suman sus puntos)
+  const people = new Map();
+  for (const en of enrollments.filter((e) => ids.has(e.curso_id))) {
+    const a = accumulated(en.alumna_id, en.curso_id);
+    const p = people.get(en.alumna_id) || { id: en.alumna_id, u: en.usuarios, earned: 0, possible: 0, missing: 0, cursos: [] };
+    p.earned += a.earned; p.possible += a.possible; p.cursos.push(en.curso_id);
+    p.missing += ts.filter((t) => t.curso_id === en.curso_id && isExpired(t) && !isExpo(t)).filter((t) => { const x = submissionOf(t.id, en.alumna_id); return !hasWork(x) && !gradeFor(x?.id); }).length;
+    people.set(en.alumna_id, p);
+  }
+  const list = [...people.values()].map((p) => ({ ...p, pct: p.possible ? (p.earned / p.possible) * 100 : null }));
+  // Estado de cada tarea
+  const taskRows = ts.map((t) => {
+    const st = studentsOf(t.curso_id);
+    const c = { graded: 0, toGrade: 0, missing: 0, pending: 0, total: st.length };
+    for (const en of st) {
+      const x = submissionOf(t.id, en.alumna_id);
+      if (gradeFor(x?.id)) c.graded++;
+      else if (hasWork(x)) c.toGrade++;
+      else if (isExpired(t) && !isExpo(t)) c.missing++;
+      else c.pending++;
+    }
+    return { t, ...c };
+  }).sort((a, b) => new Date(b.t.fecha_limite) - new Date(a.t.fecha_limite));
+  const courseAvg = cs.map((c) => {
+    const ps = list.filter((p) => p.cursos.includes(c.id)).map((p) => accumulated(p.id, c.id).pct).filter((x) => x !== null);
+    return { c, avg: ps.length ? ps.reduce((x, y) => x + y, 0) / ps.length : null, n: studentsOf(c.id).length };
+  });
+  return { cs, ts, list, taskRows, courseAvg };
+}
+function dashboardHtml() {
+  if (!courses.length) return empty('Primero crea un curso.');
+  const { ts, list, taskRows, courseAvg } = dashData();
+  const withPct = list.filter((p) => p.pct !== null);
+  const avg = withPct.length ? withPct.reduce((x, p) => x + p.pct, 0) / withPct.length : null;
+  const assigned = taskRows.reduce((x, r) => x + r.total, 0);
+  const delivered = taskRows.reduce((x, r) => x + r.graded + r.toGrade, 0);
+  const toGrade = taskRows.reduce((x, r) => x + r.toGrade, 0);
+  const atRisk = withPct.filter((p) => p.pct < 60).length;
+  const tile = (label, value, sub, icon, pill) => `<div class="col-6 col-xl"><div class="stat-card h-100"><div class="stat-icon ${pill}"><i class="bi bi-${icon}"></i></div><h3>${value}</h3><div class="stat-label">${label}</div>${sub ? `<div class="small muted mt-1">${sub}</div>` : ''}</div></div>`;
+  const tiles = `<div class="row g-3 mb-4">
+    ${tile('Alumnas', list.length, `${ts.length} actividades`, 'people', 'pill-purple')}
+    ${tile('Promedio general', avg === null ? '—' : `${Math.round(avg)}%`, 'nota acumulada', 'graph-up', 'pill-blue')}
+    ${tile('Trabajos entregados', assigned ? `${Math.round((delivered / assigned) * 100)}%` : '—', `${delivered} de ${assigned}`, 'check2-circle', 'pill-green')}
+    ${tile('Por calificar', toGrade, 'entregas sin nota', 'hourglass-split', 'pill-orange')}
+    ${tile('Necesitan apoyo', atRisk, 'menos de 60%', 'exclamation-triangle', 'pill-orange')}</div>`;
+
+  // Histograma de notas acumuladas
+  const counts = BINS.map((b) => ({ b, people: list.filter((p) => binOf(p.pct) === b) }));
+  const maxCount = Math.max(1, ...counts.map((x) => x.people.length));
+  const hist = `<div class="viz-hist" role="img" aria-label="Cuántas alumnas hay en cada rango de nota acumulada">${counts.map(({ b, people }) => {
+    const h = people.length ? Math.max(4, (people.length / maxCount) * 100) : 0;
+    const tip = `${b.label}${b.key === 'none' ? '' : '%'}: ${people.length} alumna${people.length === 1 ? '' : 's'}${people.length ? ' · clic para ver la lista' : ''}`;
+    return `<button type="button" class="viz-col ${dashBin === b.key ? 'active' : ''}" data-dash-bin="${b.key}" data-tip="${esc(tip)}" ${people.length ? '' : 'disabled'}>
+      <span class="viz-val">${people.length}</span>
+      <span class="viz-bar-wrap"><span class="viz-bar ${b.key === 'none' ? 'is-none' : ''}" style="height:${h}%"></span></span>
+      <span class="viz-lab">${esc(b.label)}</span></button>`;
+  }).join('')}</div>`;
+
+  // Barras apiladas por actividad
+  const seg = (n, total, cls, label, r) => (n ? `<span class="viz-seg ${cls}" style="flex:${n}" data-tip="${esc(`${r.t.titulo} · ${label}: ${n} de ${total}`)}"></span>` : '');
+  const legend = `<div class="viz-legend"><span><i class="sw s-graded"></i>Calificada</span><span><i class="sw s-tograde"></i>Entregada, por calificar</span><span><i class="sw s-missing"></i>No entregó (vencida)</span><span><i class="sw s-pending"></i>Pendiente</span></div>`;
+  const stack = taskRows.length ? taskRows.slice(0, 15).map((r) => `<div class="viz-row clickable" data-open-task="${esc(r.t.id)}">
+      <div class="viz-row-lab"><div class="text-truncate fw-semibold small">${esc(r.t.titulo)}</div><div class="text-truncate muted" style="font-size:.75rem">${esc(courseName(r.t.curso_id))} · ${esc(fmt(r.t.fecha_limite))}</div></div>
+      <div class="viz-stack">${r.total ? seg(r.graded, r.total, 's-graded', 'Calificadas', r) + seg(r.toGrade, r.total, 's-tograde', 'Por calificar', r) + seg(r.missing, r.total, 's-missing', 'No entregaron', r) + seg(r.pending, r.total, 's-pending', 'Pendientes', r) : '<span class="viz-seg s-pending" style="flex:1"></span>'}</div>
+      <div class="viz-row-val small">${r.graded + r.toGrade}/${r.total}<span class="muted"> entregas</span>${r.missing ? `<div class="text-danger" style="font-size:.75rem">${r.missing} sin entregar</div>` : ''}</div></div>`).join('')
+    + (taskRows.length > 15 ? `<p class="small muted mt-2 mb-0">Se muestran las 15 actividades más recientes de ${taskRows.length}.</p>` : '')
+    : empty('Todavía no hay actividades en este curso.');
+
+  // Promedio por curso (solo con "Todos los cursos")
+  const perCourse = !dashCourse && courseAvg.length > 1 ? `<div class="surface-card mb-4"><h6 class="fw-bold mb-1">Promedio por curso</h6><p class="small muted mb-3">Nota acumulada promedio de las alumnas de cada curso.</p>
+    ${courseAvg.map(({ c, avg: a, n }) => `<div class="viz-hrow" data-tip="${esc(`${c.nombre} ${c.seccion}: ${a === null ? 'sin notas aún' : `${Math.round(a)}%`} · ${n} alumnas`)}">
+      <div class="viz-row-lab small"><span class="fw-semibold">${esc(c.nombre)}</span> <span class="muted">${esc(c.grado)} ${esc(c.seccion)}</span></div>
+      <div class="viz-htrack"><span class="viz-hbar" style="width:${a === null ? 0 : Math.min(100, a)}%"></span></div>
+      <div class="viz-row-val small fw-bold">${a === null ? '—' : `${Math.round(a)}%`}</div></div>`).join('')}</div>` : '';
+
+  // Tabla: rango elegido o alumnas que necesitan apoyo
+  const chosen = dashBin ? BINS.find((b) => b.key === dashBin) : null;
+  const tableList = (chosen ? list.filter((p) => binOf(p.pct) === chosen) : list.filter((p) => (p.pct !== null && p.pct < 60) || p.missing >= 2))
+    .sort((x, y) => (x.pct ?? 999) - (y.pct ?? 999) || y.missing - x.missing);
+  const tTitle = chosen ? `Alumnas con nota ${chosen.label}${chosen.key === 'none' ? '' : '%'}` : 'Alumnas que necesitan apoyo';
+  const tHint = chosen ? '<button class="btn btn-link btn-sm p-0" data-dash-bin="">Ver las que necesitan apoyo</button>' : '<span class="small muted">Nota acumulada menor a 60% o 2 o más tareas vencidas sin entregar. Haz clic en una barra de la gráfica para ver otro rango.</span>';
+  const table = `<div class="surface-card"><div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><h6 class="fw-bold mb-0">${tTitle} (${tableList.length})</h6>${tHint}</div>
+    ${tableList.length ? `<div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="text-center">Clave</th><th>Alumna</th><th>Curso</th><th>Sin entregar</th><th>Nota acumulada</th></tr></thead><tbody>${tableList.map((p) => `<tr>
+      <td class="text-center clave-cell">${esc(p.u?.clave ?? '—')}</td><td class="fw-semibold">${esc(listName(p.u))}</td>
+      <td class="small">${p.cursos.map((id) => esc(`${course(id)?.nombre || ''} ${course(id)?.seccion || ''}`)).join('<br>')}</td>
+      <td>${p.missing ? `<span class="text-danger fw-bold">${p.missing}</span>` : '0'}</td>
+      <td class="text-nowrap">${accHtml({ earned: p.earned, possible: p.possible, pct: p.pct })}</td></tr>`).join('')}</tbody></table></div>`
+      : `<p class="muted mb-0">${chosen ? 'No hay alumnas en este rango.' : '¡Muy bien! Ninguna alumna necesita apoyo por ahora.'}</p>`}</div>`;
+
+  return `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div><h4 class="section-heading mb-1">¿Cómo van tus alumnas?</h4><p class="muted mb-0">${dashCourse ? esc(`${course(dashCourse).nombre} · ${course(dashCourse).grado} ${course(dashCourse).seccion}`) : 'Todos tus cursos'}</p></div>${dashCourseSelect()}</div>
+    ${tiles}
+    <div class="row g-4 mb-4">
+      <div class="col-lg-5"><div class="surface-card h-100"><h6 class="fw-bold mb-1">Distribución de notas</h6><p class="small muted mb-3">Cuántas alumnas hay en cada rango de nota acumulada.</p>${hist}</div></div>
+      <div class="col-lg-7"><div class="surface-card h-100"><h6 class="fw-bold mb-1">Entregas por actividad</h6><p class="small muted mb-2">Haz clic en una actividad para calificarla.</p>${legend}<div class="mt-2">${stack}</div></div></div>
+    </div>
+    ${perCourse}${table}`;
 }
 
 async function renderSubmissionDetail(id) {
@@ -1111,6 +1235,8 @@ $('#mainContent').addEventListener('click', (e) => {
   if ((b = el('[data-quick-alumna], [data-quick-group]'))) return quickGrade(b);
   if ((b = el('[data-new-group]'))) return openGroupModal();
   if ((b = el('[data-save-group-settings]'))) return saveGroupSettings(b);
+  if ((b = el('[data-entregas-tab]'))) { entregasTab = b.dataset.entregasTab; return renderSubmissions(); }
+  if ((b = el('[data-dash-bin]'))) { dashBin = b.dataset.dashBin && b.dataset.dashBin !== dashBin ? b.dataset.dashBin : null; return renderSubmissions(); }
   if ((b = el('[data-choose-group]'))) return openChooseGroup(b.dataset.chooseGroup);
   if ((b = el('[data-edit-group]'))) return openGroupModal(b.dataset.editGroup);
   if ((b = el('[data-delete-group]'))) return deleteGroup(b.dataset.deleteGroup);
@@ -1130,6 +1256,19 @@ $('#mainContent').addEventListener('click', (e) => {
 
 $('#taskForm').elements.tipo.addEventListener('change', (e) => $('#taskExpoHint').classList.toggle('d-none', e.target.value !== 'exposicion'));
 
+// Tooltip de las gráficas
+const vizTip = Object.assign(document.createElement('div'), { className: 'viz-tip', role: 'tooltip' });
+document.body.append(vizTip);
+$('#mainContent').addEventListener('mousemove', (e) => {
+  const m = e.target.closest('[data-tip]');
+  if (!m) { vizTip.classList.remove('show'); return; }
+  vizTip.textContent = m.dataset.tip;
+  vizTip.classList.add('show');
+  const x = Math.min(e.clientX + 14, window.innerWidth - vizTip.offsetWidth - 8);
+  vizTip.style.transform = `translate(${x}px, ${e.clientY + 16}px)`;
+});
+$('#mainContent').addEventListener('mouseleave', () => vizTip.classList.remove('show'));
+
 // Enter en la nota rápida = guardar
 $('#mainContent').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || !e.target.matches('[data-q-nota], [data-q-com]')) return;
@@ -1145,6 +1284,7 @@ $('#mainContent').addEventListener('input', (e) => {
 
 $('#mainContent').addEventListener('change', (e) => {
   if (e.target.id === 'studentsSort') { studentsSort = e.target.value; renderStudents(); }
+  if (e.target.id === 'dashCourse') { dashCourse = e.target.value; dashBin = null; renderSubmissions(); }
   if (e.target.id === 'studentsCourseSelect') { studentsCourse = e.target.value; renderStudents(); }
   if (e.target.id === 'taskCourseFilter') navigate('tareas', e.target.value || null);
 });
