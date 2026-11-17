@@ -464,6 +464,7 @@ VALUES ('tareas-escolares', 'tareas-escolares', false, 10485760, ARRAY[
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-access', 'application/msaccess', 'application/x-msaccess',
   'image/png', 'image/jpeg', 'text/plain',
   'application/zip', 'application/x-zip-compressed'
 ])

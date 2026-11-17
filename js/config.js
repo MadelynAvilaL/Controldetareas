@@ -6,3 +6,7 @@ export const SUPABASE_ANON_KEY = 'sb_publishable_A4cxszPR2APYYlCbSJ43Eg_AwvgKnaB
 // Las cuentas se crean en servidor como usuario@alumnas.invalid
 // Solo se aceptan nombres de usuario formados por a-z, 0-9, punto, _ o -.
 export const LOGIN_DOMAIN = 'alumnas.invalid';
+
+// BUSCADOR WEB SEGURO (opcional): pega aquí el "ID del motor de búsqueda" (cx)
+// de Google Programmable Search Engine. Si lo dejas vacío, solo funciona la Enciclopedia.
+export const GOOGLE_CSE_ID = '';

@@ -1,5 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { SUPABASE_URL, SUPABASE_ANON_KEY, LOGIN_DOMAIN } from './config.js';
+import * as CONFIG from './config.js';
+const { SUPABASE_URL, SUPABASE_ANON_KEY, LOGIN_DOMAIN } = CONFIG;
+const CSE_ID = String(CONFIG.GOOGLE_CSE_ID || '').trim(); // buscador seguro de Google (opcional)
 
 // =====================================================================
 // CONFIGURACIÓN Y UTILIDADES
@@ -16,6 +18,7 @@ const MIME = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   xls: 'application/vnd.ms-excel',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  accdb: 'application/vnd.ms-access', mdb: 'application/vnd.ms-access',
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
   txt: 'text/plain', zip: 'application/zip',
 };
@@ -26,7 +29,8 @@ const TIPOS = { tarea: 'Tarea', proyecto: 'Proyecto', practica: 'Práctica', inv
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (x) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[x]));
 const fmt = (s) => (s ? new Intl.DateTimeFormat('es-GT', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(s)) : 'Sin fecha');
-const today = new Intl.DateTimeFormat('es-GT', { dateStyle: 'full' }).format(new Date());
+const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+const today = cap(new Intl.DateTimeFormat('es-GT', { dateStyle: 'full' }).format(new Date()));
 const setupDone = SUPABASE_URL.startsWith('https://') && !SUPABASE_URL.includes('TU-PROYECTO') && !SUPABASE_ANON_KEY.startsWith('TU_');
 const db = setupDone ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const modal = (id) => bootstrap.Modal.getOrCreateInstance($(id));
@@ -43,6 +47,11 @@ let studentsTab = 'lista', studentsSort = 'clave';
 let editingGroup = null;
 let choosingCourse = null;
 let entregasTab = 'resumen', dashCourse = '', dashBin = null;
+// v7: material de lectura, consultas y agenda
+let hasV7 = true;
+let readings = [], readingFiles = [], queries = [], queryMsgs = [];
+let materialCourse = '', queriesTab = 'abiertas';
+let agendaMode = 'mes', agendaRef = new Date(), agendaDay = null, agendaCourse = '', miniRef = new Date();
 const hasV6 = (c) => c && 'grupos_abiertos' in c;  // ¿ya se ejecutó migracion-v6?
 const COVER_BUCKET = 'portadas-cursos';
 const photoUrls = new Map();      // ruta de foto → enlace firmado
@@ -273,6 +282,7 @@ async function refresh(quiet = false) {
     if (cr.error) throw cr.error;
     courses = cr.data || [];
     tasks = []; submissions = []; grades = []; notices = []; enrollments = []; files = []; materials = []; groups = []; members = [];
+    readings = []; readingFiles = []; queries = []; queryMsgs = [];
     const ids = courses.map((c) => c.id);
     await loadCovers(courses);
 
@@ -295,6 +305,8 @@ async function refresh(quiet = false) {
           console.warn('Grupos no disponibles (¿falta migracion-v5?):', (gq.error || mq.error).message);
         } else { groups = gq.data || []; members = mq.data || []; }
       }
+
+      if (hasV7) await loadV7(ids);
 
       const taskIds = tasks.map((t) => t.id);
       if (taskIds.length) {
@@ -330,7 +342,7 @@ async function refresh(quiet = false) {
 // =====================================================================
 function navigate(v, arg = null) {
   view = v; viewArg = arg;
-  const navKey = { tarea: 'tareas', entrega: 'entregas' }[v] || v;
+  const navKey = { tarea: 'tareas', entrega: 'entregas', consulta: 'consultas' }[v] || v;
   document.querySelectorAll('#sideNav .nav-link').forEach((x) => x.classList.toggle('active', x.dataset.view === navKey));
   $('#sidebar').classList.remove('open');
   $('#mobileShade').classList.add('d-none');
@@ -340,10 +352,14 @@ function navigate(v, arg = null) {
 function render() {
   if (!me) return;
   renderToken++;
+  const navKey = { tarea: 'tareas', entrega: 'entregas', consulta: 'consultas' }[view] || view;
+  document.querySelectorAll('#sideNav .nav-link').forEach((x) => x.classList.toggle('active', x.dataset.view === navKey));
   const views = {
     inicio: renderHome, cursos: renderCourses, tareas: () => renderTasks(viewArg), tarea: () => renderTaskDetail(viewArg),
     entregas: renderSubmissions, entrega: () => renderSubmissionDetail(viewArg), alumnas: renderStudents, anuncios: renderNotices,
+    agenda: renderAgenda, buscar: renderSearch, respaldo: renderBackup, material: renderMaterial, consultas: renderQueries, consulta: () => renderQueryDetail(viewArg),
   };
+  paintQueryBadge();
   return (views[view] || renderHome)();
 }
 
@@ -372,6 +388,7 @@ function courseCard(c) {
     ${code}${studentInfo}
     <div class="d-flex flex-wrap gap-2">
       <button class="btn btn-outline-primary btn-sm" data-open-course="${esc(c.id)}">Tareas (${nTasks}) <i class="bi bi-arrow-right ms-1"></i></button>
+      ${hasV7 ? `<button class="btn btn-outline-secondary btn-sm" data-open-material="${esc(c.id)}"><i class="bi bi-book me-1"></i>Material (${readings.filter((m) => m.curso_id === c.id).length})</button>` : ''}
       ${teacher ? `<button class="btn btn-outline-secondary btn-sm" data-course-students="${esc(c.id)}"><i class="bi bi-people me-1"></i>Alumnas (${nStudents})</button><button class="btn btn-outline-secondary btn-sm" data-edit-course="${esc(c.id)}" title="Editar curso"><i class="bi bi-pencil"></i></button>` : ''}
     </div>
   </div></div></div>`;
@@ -404,19 +421,44 @@ function renderHome() {
   const teacher = isTeacher();
   const pending = submissions.filter((s) => hasWork(s) && !gradeFor(s.id)).length;
   const myPending = tasks.filter((t) => !mySubmission(t.id) && canSubmit(t)).length;
-  const intro = `<div class="welcome-banner mb-4"><div style="position:relative;z-index:1"><div class="small mb-2 opacity-75">${esc(today)}</div><h2>${greeting()}, ${esc(me.nombre)} ✨</h2><p>${teacher ? 'Organiza tus cursos y acompaña el progreso de tus alumnas.' : '¡Organiza tus actividades y sigue aprendiendo cada día!'}</p></div></div>`;
+  const openQ = openQueriesCount();
+  const hero = `<div class="hero-banner mb-4">
+      <div class="hero-text"><span class="hero-tag"><i class="bi bi-cpu me-1"></i>${esc(today)}</span>
+        <h2>${greeting()}, ${esc(me.nombre)}</h2>
+        <p>${teacher ? 'Organiza tus cursos, comparte material y acompaña el progreso de tus alumnas.' : 'Revisa tu agenda, lee el material de tus cursos y pregunta cuando lo necesites.'}</p>
+        <div class="d-flex flex-wrap gap-2 mt-3">
+          <button class="btn btn-light btn-sm" data-go="agenda"><i class="bi bi-calendar3 me-1"></i>Ver agenda</button>
+          <button class="btn btn-glass btn-sm" data-go="buscar"><i class="bi bi-search me-1"></i>Buscar información</button>
+          ${hasV7 ? `<button class="btn btn-glass btn-sm" data-go="material"><i class="bi bi-book me-1"></i>Material de lectura</button>` : ''}
+          ${hasV7 ? `<button class="btn btn-glass btn-sm" data-go="consultas"><i class="bi bi-chat-dots me-1"></i>${teacher ? `Consultas${openQ ? ` (${openQ})` : ''}` : 'Hacer una consulta'}</button>` : ''}
+        </div></div>
+      <div class="hero-art" aria-hidden="true"><div class="orb"></div><div class="hero-screen"><span></span><span></span><span></span><i class="bi bi-mortarboard-fill"></i></div><i class="bi bi-wifi f1"></i><i class="bi bi-lightbulb f2"></i><i class="bi bi-code-slash f3"></i></div>
+    </div>`;
   const stats = teacher
-    ? [stat('Mis cursos', courses.length, 'collection', 'pill-purple'), stat('Tareas publicadas', tasks.length, 'journal-text', 'pill-blue'), stat('Entregas recibidas', submissions.filter(hasWork).length, 'inbox', 'pill-green'), stat('Por calificar', pending, 'hourglass-split', 'pill-orange')]
-    : [stat('Cursos inscritos', courses.length, 'collection', 'pill-purple'), stat('Tareas disponibles', tasks.length, 'journal-text', 'pill-blue'), stat('Entregadas', submissions.filter((s) => s.alumna_id === me.id && hasWork(s)).length, 'check2-circle', 'pill-green'), stat('Por entregar', myPending, 'hourglass-split', 'pill-orange')];
+    ? [stat('Mis cursos', courses.length, 'collection', 'pill-purple'), stat('Tareas publicadas', tasks.length, 'journal-text', 'pill-blue'), stat('Por calificar', pending, 'hourglass-split', 'pill-orange'), stat('Consultas abiertas', hasV7 ? openQ : '—', 'chat-dots', 'pill-green')]
+    : [stat('Cursos inscritos', courses.length, 'collection', 'pill-purple'), stat('Por entregar', myPending, 'hourglass-split', 'pill-orange'), stat('Entregadas', submissions.filter((s) => s.alumna_id === me.id && hasWork(s)).length, 'check2-circle', 'pill-green'), stat('Material de lectura', hasV7 ? readings.length : '—', 'book', 'pill-blue')];
   const upcoming = tasks.filter((t) => !isExpired(t)).slice(0, 5);
   const courseBtn = teacher
     ? '<button class="btn btn-outline-primary btn-sm" data-action="new-course"><i class="bi bi-plus-lg me-1"></i>Nuevo curso</button>'
     : '<button class="btn btn-outline-primary btn-sm" data-action="join"><i class="bi bi-box-arrow-in-right me-1"></i>Unirme a una clase</button>';
-  $('#mainContent').innerHTML = `${intro}<div class="row g-3 mb-4">${stats.join('')}</div>
-    <div class="d-flex justify-content-between align-items-center mb-3"><h4 class="section-heading mb-0">Próximas actividades</h4>${teacher ? '<button class="btn btn-primary btn-sm" data-action="new-task"><i class="bi bi-plus-lg me-1"></i>Nueva tarea</button>' : ''}</div>
-    <div class="surface-card mb-4">${upcoming.length ? upcoming.map(taskRow).join('') : empty('No hay actividades próximas.')}</div>
-    <div class="d-flex justify-content-between align-items-center mb-3"><h4 class="section-heading mb-0">Mis cursos</h4>${courseBtn}</div>
-    ${courses.length ? courseCards() : empty(teacher ? 'Crea tu primer curso para empezar.' : 'Únete a una clase con el código que te dé tu docente.')}`;
+  const tiles = courses.length
+    ? `<div class="row g-3 mb-4">${courses.map((c, i) => {
+        const cover = c.portada && photoUrls.get(c.portada);
+        return `<div class="col-sm-6 col-xxl-4"><button class="cat-tile cat-${i % 4}" data-open-course="${esc(c.id)}" ${cover ? `style="background-image:linear-gradient(135deg,#0b3b3ad9,#0f766ec0),url('${esc(cover)}')"` : ''}>
+          <span class="cat-name">${esc(c.nombre)}</span><span class="cat-meta">${esc(c.grado)} · ${esc(c.seccion)}</span>
+          <span class="cat-foot"><span><i class="bi bi-clipboard-check"></i> ${tasks.filter((t) => t.curso_id === c.id).length}</span>${hasV7 ? `<span><i class="bi bi-book"></i> ${readings.filter((m) => m.curso_id === c.id).length}</span>` : ''}<i class="bi bi-arrow-up-right ms-auto"></i></span></button></div>`;
+      }).join('')}</div>`
+    : empty(teacher ? 'Crea tu primer curso para empezar.' : 'Únete a una clase con el código que te dé tu docente.');
+  const recentReadings = hasV7 ? [...readings].sort((x, y) => new Date(y.creado_en) - new Date(x.creado_en)).slice(0, 3) : [];
+  const side = `<div class="welcome-card mb-3">${avatarHtml(me, 'avatar avatar-lg')}<div class="small opacity-75 mt-2">Bienvenid${teacher ? 'o/a' : 'a'}</div><div class="fw-bold fs-5 lh-sm">${esc(fullName(me))}</div><div class="small opacity-75">${teacher ? 'Docente' : 'Alumna'}${me.clave ? ` · Clave ${esc(me.clave)}` : ''}</div></div>
+    <div class="side-card mb-3"><div class="side-title"><i class="bi bi-search"></i>Buscar curso</div><select class="form-select form-select-sm" id="homeCourseSearch"><option value="">Lista de cursos</option>${courses.map((c) => `<option value="${esc(c.id)}">${esc(c.nombre)} · ${esc(c.seccion)}</option>`).join('')}</select></div>
+    <div class="side-card mb-3"><div class="side-title"><i class="bi bi-calendar3"></i>Calendario</div>${miniCalendarHtml()}</div>
+    ${recentReadings.length ? `<div class="side-card"><div class="side-title"><i class="bi bi-book"></i>Material reciente</div>${recentReadings.map((m) => `<button class="mini-item" data-open-material="${esc(m.curso_id)}"><i class="bi bi-file-earmark-text"></i><span class="text-truncate">${esc(m.titulo)}<small>${esc(courseName(m.curso_id))}</small></span></button>`).join('')}</div>` : ''}`;
+  $('#mainContent').innerHTML = `<div class="row g-4"><div class="col-xl-9">${hero}<div class="row g-3 mb-4">${stats.join('')}</div>
+    <div class="section-bar"><h4 class="section-heading mb-0">Mis cursos</h4>${courseBtn}</div>${tiles}
+    <div class="section-bar"><h4 class="section-heading mb-0">Próximas actividades</h4>${teacher ? '<button class="btn btn-primary btn-sm" data-action="new-task"><i class="bi bi-plus-lg me-1"></i>Nueva tarea</button>' : ''}</div>
+    <div class="surface-card mb-4">${upcoming.length ? upcoming.map(taskRow).join('') : empty('No hay actividades próximas.')}</div></div>
+    <div class="col-xl-3"><div class="home-side">${side}</div></div></div>`;
 }
 
 function renderCourses() {
@@ -479,7 +521,8 @@ async function renderTaskDetail(id) {
       }
     }
     const expoHint = isExpo(t) ? '<div class="alert alert-info small"><i class="bi bi-easel me-1"></i>Sube tu presentación. Tu docente te calificará mientras expones.</div>' : '';
-    side = `${groupBox}<div class="surface-card mb-3"><div class="d-flex justify-content-between align-items-center mb-3"><h6 class="fw-bold mb-0">Tu trabajo</h6>${statusFor(t)}</div>${expoHint}${hasWork(s) || !s ? work : '<p class="muted mb-0">No subiste archivos para esta actividad.</p>'}${action}</div>
+    const askBtn = hasV7 ? `<div class="surface-card mb-3 ask-card"><div class="d-flex align-items-center gap-3"><div class="task-symbol"><i class="bi bi-chat-dots"></i></div><div class="flex-grow-1"><div class="fw-bold">¿Tienes dudas?</div><div class="small muted">Escríbele a tu docente sobre esta actividad.</div></div><button class="btn btn-sm btn-outline-primary text-nowrap" data-ask-task="${esc(t.id)}">Consultar</button></div></div>` : '';
+    side = `${groupBox}${askBtn}<div class="surface-card mb-3"><div class="d-flex justify-content-between align-items-center mb-3"><h6 class="fw-bold mb-0">Tu trabajo</h6>${statusFor(t)}</div>${expoHint}${hasWork(s) || !s ? work : '<p class="muted mb-0">No subiste archivos para esta actividad.</p>'}${action}</div>
       ${g ? `<div class="surface-card grade-card"><h6 class="fw-bold mb-2">Calificación</h6><div class="grade-value">${esc(g.nota)} <span>/ ${esc(t.puntos_maximos)}</span></div><div class="small muted">Calificada el ${esc(fmt(g.calificado_en))}</div><h6 class="fw-bold mt-3 mb-1">Comentario de tu docente</h6>${pre(g.comentario || 'Sin comentarios.')}</div>` : ''}`;
   }
   if (token !== renderToken) return; // el usuario ya cambió de pantalla
@@ -1197,6 +1240,7 @@ $('#loginForm').addEventListener('submit', async (e) => {
 $('#logoutBtn').onclick = async () => {
   await db.auth.signOut();
   me = null; courses = []; tasks = []; submissions = []; grades = []; notices = []; enrollments = []; files = []; materials = [];
+  readings = []; readingFiles = []; queries = []; queryMsgs = [];
   showLogin();
 };
 $('#homeLink').onclick = (e) => { e.preventDefault(); navigate('inicio'); };
@@ -1222,9 +1266,12 @@ $('#mainContent').addEventListener('click', (e) => {
     else if (a === 'new-notice') openNoticeModal();
     else if (a === 'enroll') openEnrollModal();
     else if (a === 'create-account') openAccountModal();
+    else if (a === 'new-material') openMaterialModal(materialCourse || null);
+    else if (a === 'new-query') openQueryModal();
     return;
   }
   if ((b = el('[data-submit-task]'))) return openSubmitModal(b.dataset.submitTask);
+  if (handleV7Click(el)) return;
   if ((b = el('[data-edit-task]'))) return openTaskModal(b.dataset.editTask);
   if ((b = el('[data-delete-task]'))) return deleteTask(b.dataset.deleteTask);
   if ((b = el('[data-delete-material]'))) return deleteMaterial(b.dataset.deleteMaterial);
@@ -1287,6 +1334,9 @@ $('#mainContent').addEventListener('change', (e) => {
   if (e.target.id === 'dashCourse') { dashCourse = e.target.value; dashBin = null; renderSubmissions(); }
   if (e.target.id === 'studentsCourseSelect') { studentsCourse = e.target.value; renderStudents(); }
   if (e.target.id === 'taskCourseFilter') navigate('tareas', e.target.value || null);
+  if (e.target.id === 'materialCourseFilter') { materialCourse = e.target.value; renderMaterial(); }
+  if (e.target.id === 'agendaCourseFilter') { agendaCourse = e.target.value; renderAgenda(); }
+  if (e.target.id === 'homeCourseSearch' && e.target.value) navigate('tareas', e.target.value);
 });
 
 // Mi perfil y foto
@@ -1580,5 +1630,777 @@ $('#passwordForm').addEventListener('submit', async (e) => {
 });
 
 $('#accountUser').addEventListener('input', (e) => { e.target.value = e.target.value.toLowerCase().replace(/\s+/g, '.'); });
+
+// =====================================================================
+// v7: MATERIAL DE LECTURA, CONSULTAS Y AGENDA
+// =====================================================================
+const READ_DIR = 'lectura';
+const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const pad2 = (n) => String(n).padStart(2, '0');
+const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`; };
+const fromKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const mondayOf = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); return addDays(x, -((x.getDay() + 6) % 7)); };
+const monthLabel = (d) => cap(new Intl.DateTimeFormat('es-GT', { month: 'long', year: 'numeric' }).format(d));
+const timeLabel = (s) => new Intl.DateTimeFormat('es-GT', { hour: 'numeric', minute: '2-digit' }).format(new Date(s));
+const longDay = (d) => cap(new Intl.DateTimeFormat('es-GT', { weekday: 'long', day: 'numeric', month: 'long' }).format(d));
+const v7Missing = () => `<div class="alert alert-warning"><i class="bi bi-database-exclamation me-1"></i>Esta sección necesita la base de datos actualizada. Ejecuta <code>migracion-v7-material-consultas.sql</code> en Supabase &gt; SQL Editor y recarga la página.</div>`;
+
+async function loadV7(ids) {
+  const [mr, qr] = await Promise.all([
+    db.from('materiales').select('*').in('curso_id', ids).order('creado_en', { ascending: false }),
+    db.from('consultas').select(`*, usuarios:alumna_id(id,usuario,nombre,apellido${hasV4 ? ',clave,foto' : ''})`).in('curso_id', ids).order('actualizado_en', { ascending: false }),
+  ]);
+  if (mr.error || qr.error) {
+    hasV7 = false;
+    console.warn('Material/consultas no disponibles (¿falta migracion-v7?):', (mr.error || qr.error).message);
+    return;
+  }
+  readings = mr.data || []; queries = qr.data || [];
+  const [fr, msr] = await Promise.all([
+    readings.length ? db.from('archivos_material').select('*').in('material_id', readings.map((m) => m.id)).order('creado_en') : { data: [] },
+    queries.length ? db.from('consulta_mensajes').select('*').in('consulta_id', queries.map((q) => q.id)).order('creado_en') : { data: [] },
+  ]);
+  if (fr.error) console.warn(fr.error.message); else readingFiles = fr.data || [];
+  if (msr.error) console.warn(msr.error.message); else queryMsgs = msr.data || [];
+  if (isTeacher()) await loadPhotos(queries.map((q) => q.usuarios));
+}
+
+// ---------- Consultas: estado ----------
+const msgsOf = (qId) => queryMsgs.filter((m) => m.consulta_id === qId);
+const lastMsg = (q) => { const l = msgsOf(q.id); return l[l.length - 1]; };
+function queryState(q) {
+  if (q.resuelta) return 'resuelta';
+  const l = lastMsg(q);
+  return !l || l.autor_id === q.alumna_id ? 'espera' : 'respondida';
+}
+function queryBadge(q) {
+  const st = queryState(q);
+  if (st === 'resuelta') return badge('Resuelta', 'pill-green');
+  if (st === 'espera') return badge(isTeacher() ? 'Sin responder' : 'Esperando respuesta', 'pill-orange');
+  return badge(isTeacher() ? 'Respondida' : 'Tu docente respondió', 'pill-blue');
+}
+// Docente: consultas sin responder. Alumna: respuestas nuevas sin cerrar.
+const openQueriesCount = () => queries.filter((q) => queryState(q) === (isTeacher() ? 'espera' : 'respondida')).length;
+function paintQueryBadge() {
+  const el = $('#queryBadge');
+  if (!el) return;
+  const n = hasV7 ? openQueriesCount() : 0;
+  el.textContent = n;
+  el.classList.toggle('d-none', !n);
+}
+
+// ---------- Calendario pequeño (inicio) ----------
+function tasksOnDay(key, list = tasks) { return list.filter((t) => dayKey(t.fecha_limite) === key); }
+function eventClass(t) {
+  if (isTeacher()) return `ev-c${Math.max(0, courses.findIndex((c) => c.id === t.curso_id)) % 6}`;
+  const s = mySubmission(t.id);
+  if ((s && gradeFor(s.id)) || hasWork(s) || /grupo/.test(statusFor(t))) return 'ev-done';
+  return isExpired(t) ? 'ev-late' : 'ev-open';
+}
+function miniCalendarHtml() {
+  const y = miniRef.getFullYear(), m = miniRef.getMonth();
+  const start = mondayOf(new Date(y, m, 1));
+  const todayK = dayKey(new Date());
+  let cells = '';
+  for (let i = 0; i < 42; i++) {
+    const d = addDays(start, i);
+    if (i >= 35 && d.getMonth() !== m) break;
+    const k = dayKey(d);
+    const ts = tasksOnDay(k);
+    cells += `<button class="mc-day ${d.getMonth() !== m ? 'out' : ''} ${k === todayK ? 'today' : ''} ${ts.length ? 'has' : ''}" data-agenda-day="${k}" ${ts.length ? `data-tip="${esc(ts.map((t) => t.titulo).join(' · '))}"` : ''}>${d.getDate()}${ts.length ? `<i class="${eventClass(ts[0])}"></i>` : ''}</button>`;
+  }
+  return `<div class="mini-cal"><div class="mc-head"><button class="mc-nav" data-mini-nav="-1" aria-label="Mes anterior"><i class="bi bi-chevron-left"></i></button><span>${esc(monthLabel(miniRef))}</span><button class="mc-nav" data-mini-nav="1" aria-label="Mes siguiente"><i class="bi bi-chevron-right"></i></button></div>
+    <div class="mc-grid">${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((x) => `<span class="mc-dow">${x}</span>`).join('')}${cells}</div></div>`;
+}
+
+// ---------- Agenda ----------
+function agendaChip(t, withTime = true) {
+  return `<button class="ev-chip ${eventClass(t)}" data-open-task="${esc(t.id)}" data-tip="${esc(`${t.titulo} · ${courseName(t.curso_id)} · ${timeLabel(t.fecha_limite)}`)}">${withTime ? `<b>${esc(timeLabel(t.fecha_limite))}</b> ` : ''}${esc(t.titulo)}</button>`;
+}
+function agendaItem(t) {
+  const extra = isTeacher()
+    ? badge(`${submissions.filter((s) => s.tarea_id === t.id && hasWork(s)).length}/${studentsOf(t.curso_id).length} entregas`, 'pill-blue')
+    : statusFor(t);
+  return `<div class="ag-item clickable ${eventClass(t)}" data-open-task="${esc(t.id)}"><div class="ag-time">${esc(timeLabel(t.fecha_limite))}</div>
+    <div class="flex-grow-1 min-w-0"><div class="fw-bold text-truncate">${esc(t.titulo)}</div><div class="small muted text-truncate">${esc(courseName(t.curso_id))} · ${esc(TIPOS[t.tipo] || 'Tarea')} · ${esc(t.puntos_maximos)} pts</div></div>
+    <div class="text-nowrap">${extra}</div></div>`;
+}
+function renderAgenda() {
+  setTitle('Agenda', 'Mi espacio');
+  if (viewArg && /^\d{4}-\d{2}-\d{2}$/.test(viewArg)) { agendaRef = fromKey(viewArg); agendaDay = viewArg; viewArg = null; }
+  if (agendaCourse && !course(agendaCourse)) agendaCourse = '';
+  const list = tasks.filter((t) => !agendaCourse || t.curso_id === agendaCourse);
+  const todayK = dayKey(new Date());
+  const modes = [['mes', 'calendar3', 'Mes'], ['semana', 'calendar-week', 'Semana'], ['lista', 'list-ul', 'Agenda']];
+  const label = agendaMode === 'mes' ? monthLabel(agendaRef)
+    : agendaMode === 'semana' ? `Semana del ${new Intl.DateTimeFormat('es-GT', { day: 'numeric', month: 'short' }).format(mondayOf(agendaRef))}`
+    : 'Próximas actividades';
+  const legend = isTeacher()
+    ? `<div class="viz-legend">${courses.map((c, i) => `<span><i class="sw ev-c${i % 6}"></i>${esc(c.nombre)}</span>`).join('')}</div>`
+    : '<div class="viz-legend"><span><i class="sw ev-open"></i>Pendiente</span><span><i class="sw ev-done"></i>Entregada</span><span><i class="sw ev-late"></i>Vencida sin entregar</span></div>';
+  const toolbar = `<div class="agenda-bar surface-card mb-3">
+      <div class="d-flex align-items-center gap-2">${agendaMode !== 'lista' ? `<button class="btn icon-btn" data-agenda-nav="-1" aria-label="Anterior"><i class="bi bi-chevron-left"></i></button><button class="btn btn-sm btn-outline-primary" data-agenda-nav="0">Hoy</button><button class="btn icon-btn" data-agenda-nav="1" aria-label="Siguiente"><i class="bi bi-chevron-right"></i></button>` : ''}<h5 class="mb-0 ms-1">${esc(label)}</h5></div>
+      <div class="d-flex flex-wrap align-items-center gap-2 ms-auto">
+        <select class="form-select form-select-sm" id="agendaCourseFilter" style="width:auto"><option value="">Todos los cursos</option>${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === agendaCourse ? 'selected' : ''}>${esc(c.nombre)} · ${esc(c.seccion)}</option>`).join('')}</select>
+        <div class="seg">${modes.map(([k, ic, tx]) => `<button class="${agendaMode === k ? 'on' : ''}" data-agenda-mode="${k}"><i class="bi bi-${ic}"></i><span>${tx}</span></button>`).join('')}</div>
+      </div></div>`;
+  let body = '';
+  if (agendaMode === 'mes') {
+    const y = agendaRef.getFullYear(), m = agendaRef.getMonth();
+    const start = mondayOf(new Date(y, m, 1));
+    const cells = [];
+    for (let i = 0; i < 42; i++) {
+      const d = addDays(start, i);
+      if (i >= 35 && d.getMonth() !== m) break;
+      const k = dayKey(d);
+      const ts = tasksOnDay(k, list);
+      cells.push(`<div class="cal-cell ${d.getMonth() !== m ? 'out' : ''} ${k === todayK ? 'today' : ''} ${k === agendaDay ? 'sel' : ''}" data-agenda-day="${k}">
+        <span class="cal-num">${d.getDate()}</span>${ts.slice(0, 3).map((t) => agendaChip(t, false)).join('')}${ts.length > 3 ? `<span class="cal-more">+${ts.length - 3} más</span>` : ''}</div>`);
+    }
+    const dayK = agendaDay || todayK;
+    const dayTasks = tasksOnDay(dayK, list);
+    body = `<div class="row g-3"><div class="col-xl-9"><div class="surface-card p-2 p-md-3"><div class="cal-grid">${DIAS.map((x) => `<div class="cal-dow">${x}</div>`).join('')}${cells.join('')}</div></div></div>
+      <div class="col-xl-3"><div class="surface-card day-panel"><div class="small muted text-uppercase fw-bold ls">${dayK === todayK ? 'Hoy' : 'Día seleccionado'}</div><h6 class="fw-bold mb-3">${esc(longDay(fromKey(dayK)))}</h6>
+        ${dayTasks.length ? dayTasks.map(agendaItem).join('') : '<p class="small muted mb-0">No hay entregas este día.</p>'}</div></div></div>`;
+  } else if (agendaMode === 'semana') {
+    const start = mondayOf(agendaRef);
+    body = `<div class="week-grid">${DIAS.map((dn, i) => {
+      const d = addDays(start, i); const k = dayKey(d);
+      const ts = tasksOnDay(k, list);
+      return `<div class="week-col ${k === todayK ? 'today' : ''}"><div class="week-head"><span>${dn}</span><strong>${d.getDate()}</strong></div>${ts.map((t) => agendaChip(t)).join('') || '<div class="week-empty">—</div>'}</div>`;
+    }).join('')}</div>`;
+  } else {
+    const now = new Date();
+    const late = isTeacher() ? [] : list.filter((t) => isExpired(t) && eventClass(t) === 'ev-late');
+    const next = list.filter((t) => new Date(t.fecha_limite) >= addDays(now, -1) && !(isExpired(t) && dayKey(t.fecha_limite) !== todayK));
+    const groupsByDay = new Map();
+    for (const t of next) { const k = dayKey(t.fecha_limite); if (!groupsByDay.has(k)) groupsByDay.set(k, []); groupsByDay.get(k).push(t); }
+    const rel = (k) => { const diff = Math.round((fromKey(k) - fromKey(todayK)) / 86400000); return diff === 0 ? 'Hoy' : diff === 1 ? 'Mañana' : `En ${diff} días`; };
+    body = `${late.length ? `<div class="surface-card mb-3 border-late"><h6 class="fw-bold text-danger mb-2"><i class="bi bi-exclamation-triangle me-1"></i>Vencidas sin entregar (${late.length})</h6>${late.map(agendaItem).join('')}</div>` : ''}
+      <div class="surface-card">${groupsByDay.size ? [...groupsByDay.entries()].map(([k, ts]) => `<div class="ag-day"><div class="ag-date"><strong>${fromKey(k).getDate()}</strong><span class="text-capitalize">${esc(new Intl.DateTimeFormat('es-GT', { month: 'short' }).format(fromKey(k)))}</span><small>${rel(k)}</small></div><div class="flex-grow-1 min-w-0">${ts.map(agendaItem).join('')}</div></div>`).join('') : empty('No hay actividades próximas.')}</div>`;
+  }
+  $('#mainContent').innerHTML = `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><div><h4 class="section-heading mb-1">Agenda de tareas</h4><p class="muted mb-0">Fechas de entrega de todas tus actividades.</p></div>${isTeacher() ? '<button class="btn btn-primary" data-action="new-task"><i class="bi bi-plus-lg me-1"></i>Nueva tarea</button>' : ''}</div>
+    ${toolbar}${body}<div class="mt-3">${legend}</div>`;
+}
+
+// ---------- Material de lectura ----------
+const readingFilesOf = (id) => readingFiles.filter((f) => f.material_id === id);
+function fileIcon(name = '') {
+  const e = fileExt(name);
+  return { pdf: 'file-earmark-pdf', doc: 'file-earmark-word', docx: 'file-earmark-word', ppt: 'file-earmark-slides', pptx: 'file-earmark-slides', xls: 'file-earmark-excel', xlsx: 'file-earmark-excel', png: 'file-earmark-image', jpg: 'file-earmark-image', jpeg: 'file-earmark-image', zip: 'file-earmark-zip', txt: 'file-earmark-text' }[e] || 'file-earmark';
+}
+async function renderMaterial() {
+  setTitle('Material de lectura', 'Mi espacio');
+  const teacher = isTeacher();
+  if (!hasV7) { $('#mainContent').innerHTML = v7Missing(); return; }
+  if (viewArg) { materialCourse = viewArg; viewArg = null; }
+  if (materialCourse && !course(materialCourse)) materialCourse = '';
+  const token = renderToken;
+  const list = readings.filter((m) => !materialCourse || m.curso_id === materialCourse);
+  const urls = await signedMap(list.flatMap((m) => readingFilesOf(m.id)));
+  if (token !== renderToken) return;
+  const cards = list.map((m) => {
+    const fs = readingFilesOf(m.id);
+    const link = safeHttpUrl(m.enlace);
+    return `<div class="col-md-6 col-xxl-4"><div class="read-card h-100">
+      <div class="d-flex align-items-start gap-3 mb-2"><div class="read-icon"><i class="bi bi-${fs.length ? fileIcon(fs[0].nombre_archivo) : link ? 'link-45deg' : 'book'}"></i></div>
+        <div class="flex-grow-1 min-w-0"><h6 class="fw-bold mb-1">${esc(m.titulo)}</h6><div class="small muted">${esc(courseName(m.curso_id))} · ${esc(fmt(m.creado_en))}</div></div>
+        ${teacher ? `<button class="btn btn-sm btn-link text-danger p-0" data-delete-reading="${esc(m.id)}" title="Eliminar material"><i class="bi bi-trash"></i></button>` : ''}</div>
+      ${m.descripcion ? `<p class="small mb-3" style="white-space:pre-wrap">${esc(m.descripcion)}</p>` : ''}
+      <div class="file-list">${fs.map((f) => { const u = urls.get(f.ruta_storage); return `<div class="file-chip"><i class="bi bi-${fileIcon(f.nombre_archivo)}"></i>${u ? `<a target="_blank" rel="noopener noreferrer" href="${esc(u)}">${esc(f.nombre_archivo)}</a>` : `<span>${esc(f.nombre_archivo)}</span>`}<span class="ms-auto small muted text-nowrap">${f.tamano_bytes ? `${Math.max(1, Math.round(f.tamano_bytes / 1024))} KB` : ''}</span></div>`; }).join('')}
+        ${link ? `<div class="file-chip"><i class="bi bi-box-arrow-up-right"></i><a target="_blank" rel="noopener noreferrer" href="${esc(link)}">Abrir enlace</a></div>` : ''}</div>
+    </div></div>`;
+  }).join('');
+  $('#mainContent').innerHTML = `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+      <div><h4 class="section-heading mb-1">Biblioteca del curso</h4><p class="muted mb-0">${teacher ? 'Comparte lecturas, guías y archivos. No son tareas: no se entregan ni se califican.' : 'Lecturas y archivos que comparte tu docente. Solo para leer o descargar.'}</p></div>
+      <div class="d-flex gap-2"><select class="form-select form-select-sm" id="materialCourseFilter" style="min-width:200px"><option value="">Todos los cursos</option>${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === materialCourse ? 'selected' : ''}>${esc(c.nombre)} · ${esc(c.seccion)}</option>`).join('')}</select>
+      ${teacher ? '<button class="btn btn-primary text-nowrap" data-action="new-material"><i class="bi bi-cloud-arrow-up me-1"></i>Subir material</button>' : ''}</div></div>
+    ${list.length ? `<div class="row g-3">${cards}</div>` : empty(teacher ? 'Todavía no has compartido material. Usa "Subir material".' : 'Tu docente aún no ha compartido material de lectura.')}`;
+}
+function openMaterialModal(courseId = null) {
+  if (!hasV7) return notify('Primero ejecuta migracion-v7-material-consultas.sql en Supabase.', 'warning');
+  if (!courses.length) return notify('Primero crea un curso.', 'warning');
+  $('#materialForm').reset();
+  $('#materialCourse').innerHTML = courseOptions();
+  if (courseId) $('#materialCourse').value = courseId;
+  modal('#materialModal').show();
+}
+async function deleteReading(id) {
+  const m = readings.find((x) => x.id === id);
+  if (!m || !confirm(`¿Eliminar "${m.titulo}"?\nLas alumnas ya no podrán verlo.`)) return;
+  const paths = readingFilesOf(id).map((f) => f.ruta_storage);
+  const r = await db.from('materiales').delete().eq('id', id);
+  if (r.error) return notify(errMsg(r.error), 'danger');
+  if (paths.length) await db.storage.from(BUCKET).remove(paths);
+  notify('Material eliminado.');
+  await refresh(true);
+}
+
+// ---------- Consultas ----------
+function queryRow(q) {
+  const l = lastMsg(q);
+  const t = q.tarea_id && task(q.tarea_id);
+  const who = isTeacher() ? `${avatarHtml(q.usuarios)}` : '<div class="task-symbol"><i class="bi bi-chat-dots"></i></div>';
+  return `<div class="task-row clickable q-row ${queryState(q) === (isTeacher() ? 'espera' : 'respondida') ? 'unread' : ''}" data-open-query="${esc(q.id)}">${who}
+    <div class="flex-grow-1 min-w-0"><div class="d-flex flex-wrap align-items-center gap-2 mb-1"><h6 class="fw-bold mb-0">${esc(q.asunto)}</h6>${queryBadge(q)}</div>
+      <div class="small muted text-truncate">${isTeacher() ? `${esc(fullName(q.usuarios))} · ` : ''}${esc(courseName(q.curso_id))}${t ? ` · <i class="bi bi-clipboard-check"></i> ${esc(t.titulo)}` : ''}</div>
+      ${l ? `<div class="small text-truncate mt-1"><span class="muted">${l.autor_id === me.id ? 'Tú' : l.autor_id === q.alumna_id ? esc(q.usuarios?.nombre || 'Alumna') : 'Docente'}:</span> ${esc(l.mensaje)}</div>` : ''}</div>
+    <div class="small muted text-nowrap">${esc(fmt(q.actualizado_en))}</div></div>`;
+}
+function renderQueries() {
+  setTitle('Consultas', 'Mi espacio');
+  if (!hasV7) { $('#mainContent').innerHTML = v7Missing(); return; }
+  const teacher = isTeacher();
+  const filters = { abiertas: (q) => !q.resuelta, resueltas: (q) => q.resuelta, todas: () => true };
+  const list = queries.filter(filters[queriesTab] || filters.todas);
+  const tabs = `<div class="seg mb-3">${[['abiertas', 'Abiertas'], ['resueltas', 'Resueltas'], ['todas', 'Todas']].map(([k, tx]) => `<button class="${queriesTab === k ? 'on' : ''}" data-queries-tab="${k}">${tx} <span class="opacity-75">(${queries.filter(filters[k]).length})</span></button>`).join('')}</div>`;
+  $('#mainContent').innerHTML = `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+      <div><h4 class="section-heading mb-1">${teacher ? 'Consultas de tus alumnas' : 'Mis consultas'}</h4><p class="muted mb-0">${teacher ? 'Preguntas privadas de tus alumnas. Solo las ven ella y tú.' : 'Pregúntale a tu docente lo que no entiendas. Solo tu docente puede verlas.'}</p></div>
+      ${teacher ? '' : '<button class="btn btn-primary" data-action="new-query"><i class="bi bi-plus-lg me-1"></i>Nueva consulta</button>'}</div>
+    ${tabs}<div class="surface-card">${list.length ? list.map(queryRow).join('') : empty(teacher ? 'No hay consultas en esta lista.' : 'No tienes consultas aquí. ¡Pregunta cuando tengas dudas!')}</div>`;
+}
+async function renderQueryDetail(id) {
+  const q = queries.find((x) => x.id === id);
+  if (!q) { navigate('consultas'); return; }
+  const token = renderToken;
+  setTitle(q.asunto, 'Consultas');
+  await loadPhotos([q.usuarios]);
+  if (token !== renderToken) return;
+  const t = q.tarea_id && task(q.tarea_id);
+  const bubbles = msgsOf(q.id).map((m) => {
+    const mine = m.autor_id === me.id;
+    const fromStudent = m.autor_id === q.alumna_id;
+    const av = fromStudent ? avatarHtml(q.usuarios) : `<span class="avatar avatar-sm teacher-av"><i class="bi bi-person-workspace"></i></span>`;
+    return `<div class="bubble-row ${mine ? 'mine' : ''}">${mine ? '' : av}<div class="bubble"><div class="bubble-who">${mine ? 'Tú' : fromStudent ? esc(fullName(q.usuarios)) : 'Docente'} · ${esc(fmt(m.creado_en))}</div><div style="white-space:pre-wrap">${esc(m.mensaje)}</div></div></div>`;
+  }).join('');
+  const canDelete = isTeacher() || msgsOf(q.id).every((m) => m.autor_id === q.alumna_id);
+  $('#mainContent').innerHTML = `<button class="btn btn-link ps-0 mb-3" data-back="consultas"><i class="bi bi-arrow-left"></i> Volver a consultas</button>
+    <div class="row g-4"><div class="col-lg-8"><div class="surface-card chat-card">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3 pb-3 border-bottom"><div><h5 class="fw-bold mb-1">${esc(q.asunto)}</h5><div class="small muted">${isTeacher() ? `${esc(fullName(q.usuarios))} · ` : ''}${esc(courseName(q.curso_id))}</div></div>${queryBadge(q)}</div>
+      <div class="chat-thread">${bubbles || '<p class="muted small">Sin mensajes.</p>'}</div>
+      <form id="queryReplyForm" class="chat-reply mt-3"><textarea class="form-control" name="mensaje" rows="2" maxlength="4000" required placeholder="${isTeacher() ? 'Escribe tu respuesta…' : 'Escribe otro mensaje…'}"></textarea><button class="btn btn-primary" type="submit" id="queryReplyBtn" title="Enviar"><i class="bi bi-send-fill"></i></button></form>
+    </div></div>
+    <div class="col-lg-4"><div class="surface-card mb-3"><h6 class="fw-bold mb-3">Detalles</h6>
+      <div class="small mb-2"><i class="bi bi-collection me-2"></i>${esc(courseName(q.curso_id))}</div>
+      ${t ? `<div class="small mb-2"><i class="bi bi-clipboard-check me-2"></i><button class="link-btn p-0" data-open-task="${esc(t.id)}">${esc(t.titulo)}</button></div>` : ''}
+      <div class="small mb-3"><i class="bi bi-clock me-2"></i>Creada el ${esc(fmt(q.creado_en))}</div>
+      <button class="btn btn-sm ${q.resuelta ? 'btn-outline-secondary' : 'btn-success'} w-100 mb-2" data-toggle-resolved="${esc(q.id)}"><i class="bi bi-${q.resuelta ? 'arrow-counterclockwise' : 'check2-circle'} me-1"></i>${q.resuelta ? 'Volver a abrir' : 'Marcar como resuelta'}</button>
+      ${canDelete ? `<button class="btn btn-sm btn-outline-danger w-100" data-delete-query="${esc(q.id)}"><i class="bi bi-trash me-1"></i>Eliminar consulta</button>` : ''}
+    </div></div></div>`;
+  const th = $('.chat-thread'); if (th) th.scrollTop = th.scrollHeight;
+}
+function openQueryModal(taskId = null) {
+  if (!hasV7) return notify('Primero ejecuta migracion-v7-material-consultas.sql en Supabase.', 'warning');
+  if (!courses.length) return notify('Primero únete a una clase.', 'warning');
+  const f = $('#queryForm');
+  f.reset();
+  $('#queryCourse').innerHTML = courseOptions();
+  const t = taskId && task(taskId);
+  if (t) $('#queryCourse').value = t.curso_id;
+  fillQueryTasks(t?.id);
+  if (t) f.elements.asunto.value = `Duda sobre: ${t.titulo}`.slice(0, 200);
+  modal('#queryModal').show();
+}
+function fillQueryTasks(selected = '') {
+  const cId = $('#queryCourse').value;
+  $('#queryTask').innerHTML = `<option value="">— Pregunta general del curso —</option>${tasks.filter((t) => t.curso_id === cId).map((t) => `<option value="${esc(t.id)}" ${t.id === selected ? 'selected' : ''}>${esc(t.titulo)}</option>`).join('')}`;
+}
+async function toggleResolved(id) {
+  const q = queries.find((x) => x.id === id);
+  if (!q) return;
+  const r = await db.from('consultas').update({ resuelta: !q.resuelta }).eq('id', id);
+  if (r.error) return notify(errMsg(r.error), 'danger');
+  notify(q.resuelta ? 'Consulta abierta de nuevo.' : 'Consulta marcada como resuelta.');
+  await refresh(true);
+}
+async function deleteQuery(id) {
+  if (!confirm('¿Eliminar esta consulta y todos sus mensajes?')) return;
+  const r = await db.from('consultas').delete().eq('id', id);
+  if (r.error) return notify(errMsg(r.error), 'danger');
+  notify('Consulta eliminada.');
+  view = 'consultas'; viewArg = null;
+  await refresh(true);
+}
+
+// ---------- Clics de v7 ----------
+function handleV7Click(el) {
+  let b;
+  if ((b = el('[data-go]'))) { navigate(b.dataset.go); return true; }
+  if ((b = el('[data-mini-nav]'))) { miniRef = new Date(miniRef.getFullYear(), miniRef.getMonth() + Number(b.dataset.miniNav), 1); const host = b.closest('.side-card'); if (host) host.lastElementChild.outerHTML = miniCalendarHtml(); return true; }
+  if ((b = el('[data-agenda-mode]'))) { agendaMode = b.dataset.agendaMode; renderAgenda(); return true; }
+  if ((b = el('[data-agenda-nav]'))) {
+    const n = Number(b.dataset.agendaNav);
+    if (!n) { agendaRef = new Date(); agendaDay = dayKey(agendaRef); }
+    else agendaRef = agendaMode === 'semana' ? addDays(agendaRef, 7 * n) : new Date(agendaRef.getFullYear(), agendaRef.getMonth() + n, 1);
+    renderAgenda(); return true;
+  }
+  if (el('.ev-chip')) return false; // abre la tarea
+  if ((b = el('[data-agenda-day]'))) {
+    if (view === 'agenda') { agendaDay = b.dataset.agendaDay; renderAgenda(); } else { agendaMode = 'mes'; navigate('agenda', b.dataset.agendaDay); }
+    return true;
+  }
+  if ((b = el('[data-open-material]'))) { navigate('material', b.dataset.openMaterial); return true; }
+  if ((b = el('[data-delete-reading]'))) { deleteReading(b.dataset.deleteReading); return true; }
+  if ((b = el('[data-queries-tab]'))) { queriesTab = b.dataset.queriesTab; renderQueries(); return true; }
+  if (el('a')) return false;
+  if ((b = el('[data-open-query]'))) { navigate('consulta', b.dataset.openQuery); return true; }
+  if ((b = el('[data-ask-task]'))) { openQueryModal(b.dataset.askTask); return true; }
+  if ((b = el('[data-toggle-resolved]'))) { toggleResolved(b.dataset.toggleResolved); return true; }
+  if ((b = el('[data-delete-query]'))) { deleteQuery(b.dataset.deleteQuery); return true; }
+  return false;
+}
+
+// Subir material
+$('#materialForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const link = String(f.get('enlace') || '').trim();
+  const list = [...$('#materialFiles').files];
+  if (link && !safeHttpUrl(link)) return notify('El enlace debe empezar con https:// o http://.', 'warning');
+  if (!link && !list.length && !String(f.get('descripcion') || '').trim()) return notify('Agrega un archivo, un enlace o una descripción.', 'warning');
+  const bad = checkFiles(list);
+  if (bad) return notify(bad, 'warning');
+  await busy($('#materialSubmitBtn'), async () => {
+    const r = await db.from('materiales').insert({
+      curso_id: f.get('curso_id'), docente_id: me.id, titulo: f.get('titulo').trim(),
+      descripcion: String(f.get('descripcion') || '').trim() || null, enlace: link || null,
+    }).select().single();
+    if (r.error) return notify(errMsg(r.error), 'danger');
+    const failed = [];
+    for (const file of list) {
+      const path = `${READ_DIR}/${r.data.id}/${crypto.randomUUID()}-${safeName(file.name)}`;
+      const up = await db.storage.from(BUCKET).upload(path, file, { upsert: false, contentType: mimeFor(file.name) });
+      if (up.error) { failed.push(`${file.name}: ${up.error.message}`); continue; }
+      const meta = await db.from('archivos_material').insert({ material_id: r.data.id, nombre_archivo: file.name, ruta_storage: path, tipo_archivo: mimeFor(file.name), tamano_bytes: file.size });
+      if (meta.error) { failed.push(`${file.name}: ${meta.error.message}`); await db.storage.from(BUCKET).remove([path]); }
+    }
+    modal('#materialModal').hide();
+    if (failed.length) notify(`El material se guardó, pero algunos archivos no: ${failed.join('; ')}`, 'warning', 9000);
+    else notify('Material compartido con tus alumnas.');
+    view = 'material'; viewArg = r.data.curso_id;
+    await refresh();
+  });
+});
+
+// Nueva consulta (alumna)
+$('#queryCourse').addEventListener('change', () => fillQueryTasks());
+$('#queryForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const mensaje = String(f.get('mensaje') || '').trim();
+  if (!mensaje) return notify('Escribe tu pregunta.', 'warning');
+  await busy($('#querySubmitBtn'), async () => {
+    const r = await db.from('consultas').insert({ curso_id: f.get('curso_id'), alumna_id: me.id, tarea_id: f.get('tarea_id') || null, asunto: f.get('asunto').trim() }).select().single();
+    if (r.error) return notify(errMsg(r.error), 'danger');
+    const m = await db.from('consulta_mensajes').insert({ consulta_id: r.data.id, autor_id: me.id, mensaje });
+    if (m.error) { await db.from('consultas').delete().eq('id', r.data.id); return notify(errMsg(m.error), 'danger'); }
+    modal('#queryModal').hide();
+    notify('Consulta enviada a tu docente.');
+    view = 'consulta'; viewArg = r.data.id;
+    await refresh();
+  });
+});
+
+// Responder en una consulta
+$('#mainContent').addEventListener('submit', async (e) => {
+  if (e.target.id !== 'queryReplyForm') return;
+  e.preventDefault();
+  const mensaje = e.target.elements.mensaje.value.trim();
+  if (!mensaje || view !== 'consulta') return;
+  await busy($('#queryReplyBtn'), async () => {
+    const r = await db.from('consulta_mensajes').insert({ consulta_id: viewArg, autor_id: me.id, mensaje });
+    if (r.error) return notify(errMsg(r.error), 'danger');
+    await refresh(true);
+  });
+});
+$('#mainContent').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest('#queryReplyForm')) { e.preventDefault(); $('#queryReplyBtn').click(); }
+});
+
+// =====================================================================
+// v8: RESPALDO EN EXCEL Y LIMPIEZA DE DATOS (docente)
+// =====================================================================
+const XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs';
+let backupCourse = '';
+const backedUp = new Set();          // cursos con Excel descargado en esta sesión
+const CLEAN_OPTS = [
+  ['entregas', 'Entregas, archivos de las alumnas y calificaciones', true],
+  ['tareas', 'Tareas y su material de apoyo (incluye sus entregas)', false],
+  ['consultas', 'Consultas y sus mensajes', true],
+  ['material', 'Material de lectura y sus archivos', false],
+  ['avisos', 'Avisos', true],
+  ['grupos', 'Grupos', false],
+  ['alumnas', 'Quitar a las alumnas del curso (sus cuentas NO se borran)', false],
+];
+const xDate = (s) => (s ? fmt(s) : '');
+function sheetFrom(XLSX, rows, widths) {
+  const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '(sin datos)': '' }], { cellDates: true });
+  const keys = Object.keys(rows[0] || { '(sin datos)': '' });
+  ws['!cols'] = keys.map((k, i) => ({ wch: widths?.[i] ?? Math.min(45, Math.max(10, k.length + 2)) }));
+  for (const addr of Object.keys(ws)) if (ws[addr]?.t === 'd') ws[addr].z = 'dd/mm/yyyy hh:mm';
+  return ws;
+}
+function backupRows(c) {
+  const ts = tasks.filter((t) => t.curso_id === c.id).sort((a, b) => new Date(a.fecha_limite) - new Date(b.fecha_limite));
+  const st = studentsOf(c.id);
+  const notas = st.map((en) => {
+    const u = en.usuarios || {};
+    const row = { Clave: u.clave ?? '', Apellido: u.apellido || '', Nombre: u.nombre || '', Usuario: u.usuario || '', Grupo: groupOf(en.alumna_id, c.id)?.nombre || '' };
+    for (const t of ts) {
+      const s = submissionOf(t.id, en.alumna_id); const g = s && gradeFor(s.id);
+      row[`${t.titulo} (/${t.puntos_maximos})`.slice(0, 80)] = g ? Number(g.nota) : hasWork(s) ? 'Sin calificar' : isExpired(t) && !isExpo(t) ? 'No entregó' : 'Pendiente';
+    }
+    const a = accumulated(en.alumna_id, c.id);
+    return { ...row, 'Puntos obtenidos': Math.round(a.earned * 100) / 100, 'Puntos posibles': Math.round(a.possible * 100) / 100, 'Nota acumulada %': a.pct === null ? '' : Math.round(a.pct * 100) / 100 };
+  });
+  const entregas = submissions.filter((s) => ts.some((t) => t.id === s.tarea_id)).map((s) => {
+    const t = task(s.tarea_id); const g = gradeFor(s.id);
+    const u = st.find((e) => e.alumna_id === s.alumna_id)?.usuarios || s.usuarios || {};
+    return { Clave: u.clave ?? '', Alumna: listName(u), Tarea: t.titulo, Tipo: TIPOS[t.tipo] || 'Tarea', 'Fecha límite': xDate(t.fecha_limite), 'Fecha de entrega': xDate(s.fecha_entrega), Tardía: isLate(s) ? 'Sí' : 'No',
+      Nota: g ? Number(g.nota) : '', 'De': Number(t.puntos_maximos), 'Comentario docente': g?.comentario || '', Respuesta: s.contenido || '', Enlace: s.enlace || '', Archivos: filesFor(s.id).map((f) => f.nombre_archivo).join(', ') };
+  }).sort((a, b) => String(a.Clave).localeCompare(String(b.Clave), 'es', { numeric: true }));
+  const tareas = ts.map((t) => ({ Título: t.titulo, Tipo: TIPOS[t.tipo] || 'Tarea', Modalidad: t.modalidad === 'grupal' ? 'En grupo' : 'Individual', Puntos: Number(t.puntos_maximos), 'Fecha límite': xDate(t.fecha_limite), Publicada: xDate(t.fecha_publicacion), Descripción: t.descripcion || '', Instrucciones: t.instrucciones || '', 'Material de apoyo': materialsFor(t.id).map((m) => m.nombre_archivo).join(', ') }));
+  const consultas = queries.filter((q) => q.curso_id === c.id).map((q) => ({ Alumna: fullName(q.usuarios), Asunto: q.asunto, Tarea: task(q.tarea_id)?.titulo || '', Estado: q.resuelta ? 'Resuelta' : 'Abierta', Creada: xDate(q.creado_en),
+    Conversación: msgsOf(q.id).map((m) => `[${fmt(m.creado_en)}] ${m.autor_id === q.alumna_id ? 'Alumna' : 'Docente'}: ${m.mensaje}`).join('\n') }));
+  const material = readings.filter((m) => m.curso_id === c.id).map((m) => ({ Título: m.titulo, Descripción: m.descripcion || '', Enlace: m.enlace || '', Archivos: readingFilesOf(m.id).map((f) => f.nombre_archivo).join(', '), Publicado: xDate(m.creado_en) }));
+  const avisos = notices.filter((n) => n.curso_id === c.id).map((n) => ({ Título: n.titulo, Mensaje: n.contenido, Publicado: xDate(n.creado_en) }));
+  return { notas, entregas, tareas, consultas, material, avisos };
+}
+async function downloadBackup(btn) {
+  const c = course(backupCourse);
+  if (!c) return;
+  await busy(btn, async () => {
+    let XLSX;
+    try { XLSX = await import(XLSX_URL); } catch (err) { console.error(err); return notify('No se pudo cargar la herramienta de Excel. Revisa tu conexión a internet.', 'danger'); }
+    const d = backupRows(c);
+    const wb = XLSX.utils.book_new();
+    wb.Props = { Title: `Respaldo ${c.nombre}`, Author: fullName(me), Company: 'Villa de las Niñas' };
+    XLSX.utils.book_append_sheet(wb, sheetFrom(XLSX, d.notas, [7, 18, 18, 16, 12]), 'Notas');
+    XLSX.utils.book_append_sheet(wb, sheetFrom(XLSX, d.entregas, [7, 28, 30, 13, 17, 17, 8, 7, 5, 35, 40, 30, 35]), 'Entregas');
+    XLSX.utils.book_append_sheet(wb, sheetFrom(XLSX, d.tareas, [32, 13, 11, 8, 17, 17, 45, 45, 30]), 'Tareas');
+    if (hasV7) {
+      XLSX.utils.book_append_sheet(wb, sheetFrom(XLSX, d.consultas, [28, 32, 28, 10, 17, 80]), 'Consultas');
+      XLSX.utils.book_append_sheet(wb, sheetFrom(XLSX, d.material, [32, 45, 35, 35, 17]), 'Material');
+    }
+    XLSX.utils.book_append_sheet(wb, sheetFrom(XLSX, d.avisos, [32, 70, 17]), 'Avisos');
+    const name = `Respaldo_${c.nombre}_${c.grado}_${c.seccion}_${dayKey(new Date())}`.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9_-]+/g, '_');
+    XLSX.writeFile(wb, `${name}.xlsx`, { compression: true });
+    backedUp.add(c.id);
+    notify('Excel descargado. Guárdalo en un lugar seguro antes de borrar.', 'success', 7000);
+    renderBackup();
+  });
+}
+function renderBackup() {
+  setTitle('Respaldo y limpieza', 'Mi espacio');
+  if (!isTeacher()) { navigate('inicio'); return; }
+  if (!courses.length) { $('#mainContent').innerHTML = empty('Primero crea un curso.'); return; }
+  if (!course(backupCourse)) backupCourse = courses[0].id;
+  const c = course(backupCourse);
+  const ts = tasks.filter((t) => t.curso_id === c.id);
+  const count = {
+    entregas: submissions.filter((s) => ts.some((t) => t.id === s.tarea_id)).length,
+    tareas: ts.length, consultas: queries.filter((q) => q.curso_id === c.id).length, material: readings.filter((m) => m.curso_id === c.id).length,
+    avisos: notices.filter((n) => n.curso_id === c.id).length, grupos: groupsOf(c.id).length, alumnas: studentsOf(c.id).length,
+  };
+  const done = backedUp.has(c.id);
+  const select = `<select class="form-select" id="backupCourseSelect" style="width:auto;min-width:240px">${courses.map((x) => `<option value="${esc(x.id)}" ${x.id === c.id ? 'selected' : ''}>${esc(x.nombre)} · ${esc(x.grado)} ${esc(x.seccion)}</option>`).join('')}</select>`;
+  $('#mainContent').innerHTML = `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+      <div><h4 class="section-heading mb-1">Respaldo y limpieza de datos</h4><p class="muted mb-0">Al terminar el ciclo, descarga todo en Excel y después libera espacio en la base de datos.</p></div>${select}</div>
+    <div class="row g-4">
+      <div class="col-lg-6"><div class="surface-card h-100 step-card">
+        <div class="step-num">1</div><h5 class="fw-bold mb-1">Descargar respaldo en Excel</h5>
+        <p class="small muted">Un archivo .xlsx con hojas de <strong>Notas</strong> (una columna por tarea y la nota acumulada), <strong>Entregas</strong>, <strong>Tareas</strong>, <strong>Consultas</strong>, <strong>Material</strong> y <strong>Avisos</strong>. Los archivos que subieron las alumnas no se incluyen, solo sus nombres.</p>
+        <div class="d-flex flex-wrap gap-2 small mb-3">${[['people', count.alumnas, 'alumnas'], ['clipboard-check', count.tareas, 'tareas'], ['inbox', count.entregas, 'entregas'], ['chat-dots', count.consultas, 'consultas']].map(([i, n, l]) => `<span class="count-chip"><i class="bi bi-${i}"></i>${n} ${l}</span>`).join('')}</div>
+        <button class="btn btn-primary" data-download-backup><i class="bi bi-file-earmark-excel me-1"></i>Descargar Excel de ${esc(c.nombre)}</button>
+        ${done ? '<div class="small text-success mt-3"><i class="bi bi-check-circle-fill me-1"></i>Ya descargaste el respaldo de este curso.</div>' : ''}
+      </div></div>
+      <div class="col-lg-6"><div class="surface-card h-100 step-card danger ${done ? '' : 'locked'}">
+        <div class="step-num">2</div><h5 class="fw-bold mb-1">Borrar datos del curso</h5>
+        <p class="small muted">Elige qué borrar. <strong>No se puede deshacer.</strong> El curso y las cuentas de las alumnas se conservan.</p>
+        ${done ? '' : '<div class="alert alert-warning small py-2"><i class="bi bi-lock me-1"></i>Primero descarga el Excel de este curso (paso 1).</div>'}
+        <form id="cleanForm">${CLEAN_OPTS.map(([k, label, on]) => `<label class="clean-opt"><input class="form-check-input" type="checkbox" name="${k}" ${on ? 'checked' : ''} ${done ? '' : 'disabled'}><span>${esc(label)}</span><span class="ms-auto badge-soft pill-blue">${count[k]}</span></label>`).join('')}
+          <label class="form-label small mt-3">Para confirmar escribe <strong>BORRAR</strong></label>
+          <div class="d-flex gap-2"><input class="form-control" name="confirm" autocomplete="off" placeholder="BORRAR" ${done ? '' : 'disabled'}><button class="btn btn-danger text-nowrap" type="submit" id="cleanBtn" ${done ? '' : 'disabled'}><i class="bi bi-trash me-1"></i>Borrar</button></div>
+        </form>
+      </div></div>
+    </div>`;
+}
+async function removeInChunks(paths) {
+  let failed = 0;
+  for (let i = 0; i < paths.length; i += 100) {
+    const r = await db.storage.from(BUCKET).remove(paths.slice(i, i + 100));
+    if (r.error) { failed += Math.min(100, paths.length - i); console.warn(r.error.message); }
+  }
+  return failed;
+}
+async function cleanCourse(form) {
+  const c = course(backupCourse);
+  if (!c || !backedUp.has(c.id)) return notify('Primero descarga el Excel de este curso.', 'warning');
+  const o = Object.fromEntries(CLEAN_OPTS.map(([k]) => [k, form.elements[k].checked]));
+  if (!Object.values(o).some(Boolean)) return notify('Elige al menos una opción.', 'warning');
+  if (form.elements.confirm.value.trim().toUpperCase() !== 'BORRAR') return notify('Escribe BORRAR para confirmar.', 'warning');
+  const chosen = CLEAN_OPTS.filter(([k]) => o[k]).map(([, l]) => `• ${l}`).join('\n');
+  if (!confirm(`Vas a borrar de "${c.nombre} ${c.seccion}":\n\n${chosen}\n\nEsto no se puede deshacer. ¿Continuar?`)) return;
+  await busy($('#cleanBtn'), async () => {
+    const ts = tasks.filter((t) => t.curso_id === c.id);
+    // Primero los archivos del Storage (las filas de la base aún existen para validar permisos)
+    const paths = [];
+    if (o.entregas || o.tareas) paths.push(...submissions.filter((s) => ts.some((t) => t.id === s.tarea_id)).flatMap((s) => filesFor(s.id).map((f) => f.ruta_storage)));
+    if (o.tareas) paths.push(...ts.flatMap((t) => materialsFor(t.id).map((m) => m.ruta_storage)));
+    if (o.material) paths.push(...readings.filter((m) => m.curso_id === c.id).flatMap((m) => readingFilesOf(m.id).map((f) => f.ruta_storage)));
+    const failed = await removeInChunks(paths);
+    const r = await db.rpc('vaciar_curso', { p_curso: c.id, p_entregas: o.entregas, p_tareas: o.tareas, p_consultas: o.consultas, p_material: o.material, p_avisos: o.avisos, p_grupos: o.grupos, p_alumnas: o.alumnas });
+    if (r.error) {
+      const msg = /vaciar_curso|function/i.test(r.error.message) ? 'Falta ejecutar migracion-v8-respaldo-limpieza.sql en Supabase.' : errMsg(r.error);
+      return notify(msg, 'danger', 9000);
+    }
+    const res = r.data || {};
+    const summary = Object.entries(res).map(([k, n]) => `${n} ${k}`).join(', ') || 'nada';
+    notify(`Datos borrados: ${summary}.${failed ? ` ${failed} archivo(s) no se pudieron quitar del almacenamiento.` : ''}`, failed ? 'warning' : 'success', 9000);
+    await refresh(true);
+  });
+}
+$('#mainContent').addEventListener('click', (e) => { const b = e.target.closest('[data-download-backup]'); if (b) downloadBackup(b); });
+$('#mainContent').addEventListener('change', (e) => { if (e.target.id === 'backupCourseSelect') { backupCourse = e.target.value; renderBackup(); } });
+$('#mainContent').addEventListener('submit', (e) => { if (e.target.id === 'cleanForm') { e.preventDefault(); cleanCourse(e.target); } });
+
+// =====================================================================
+// v9: BUSCAR INFORMACIÓN (Wikipedia dentro de la plataforma + Google seguro)
+// =====================================================================
+const WIKI = 'https://es.wikipedia.org';
+let searchTab = 'enciclopedia', searchQuery = '', wikiResults = null, wikiArticle = null, wikiBusy = false;
+let cseReady = null;
+let histCourse = '', histStudent = '', histRows = null, histErr = null, histWarned = false;
+// Guarda la búsqueda de la alumna (la docente la ve en "Historial de alumnas")
+function logSearch(q, tipo) {
+  if (isTeacher() || !q) return;
+  db.from('busquedas').insert({ alumna_id: me.id, consulta: String(q).slice(0, 300), tipo }).then(({ error }) => {
+    if (error && !histWarned) { histWarned = true; console.warn('Historial no disponible (¿falta migracion-v9?):', error.message); }
+  });
+}
+
+function renderSearch() {
+  setTitle('Buscar información', 'Mi espacio');
+  const tabs = [['enciclopedia', 'book-half', 'Enciclopedia'], ['web', 'globe2', 'Web (búsqueda segura)'], ...(isTeacher() ? [['historial', 'clock-history', 'Historial de alumnas']] : [])];
+  if (searchTab === 'historial' && !isTeacher()) searchTab = 'enciclopedia';
+  $('#mainContent').innerHTML = `<div class="search-hero mb-4">
+      <div class="small search-kicker"><i class="bi bi-search me-1"></i>INVESTIGA SIN SALIR DEL AULA</div>
+      <h3 class="fw-bold mb-3">¿Qué quieres aprender hoy?</h3>
+      <form id="searchForm" class="search-box"><i class="bi bi-search"></i><input name="q" id="searchInput" autocomplete="off" maxlength="200" placeholder="Ej. fotosíntesis, Revolución de 1944, qué es una base de datos…" value="${esc(searchQuery)}"><button class="btn btn-primary" type="submit">Buscar</button></form>
+      ${isTeacher() ? '' : '<div class="small mt-2 opacity-75"><i class="bi bi-eye me-1"></i>Tus búsquedas se guardan y tu docente puede verlas.</div>'}
+      <div class="seg mt-3 seg-dark">${tabs.map(([k, ic, tx]) => `<button type="button" class="${searchTab === k ? 'on' : ''}" data-search-tab="${k}"><i class="bi bi-${ic}"></i><span>${tx}</span></button>`).join('')}</div>
+    </div><div id="searchResults"></div>`;
+  paintSearchResults();
+}
+function paintSearchResults() {
+  const box = $('#searchResults');
+  if (!box) return;
+  if (searchTab === 'web') return paintWeb(box);
+  if (searchTab === 'historial') return paintHistory(box);
+  if (wikiArticle) return paintArticle(box);
+  if (wikiBusy) { box.innerHTML = '<div class="py-5 text-center"><div class="spinner-border text-primary"></div></div>'; return; }
+  if (!wikiResults) {
+    box.innerHTML = `<div class="row g-3">${[['lightbulb', 'Escribe palabras clave', 'Mejor "volcanes de Guatemala" que una pregunta muy larga.'], ['journal-text', 'Lee aquí mismo', 'Los artículos de la enciclopedia se abren dentro de la plataforma.'], ['quote', 'Cita tus fuentes', 'Cada artículo tiene un botón para copiar la cita de la fuente.']].map(([i, t, d]) => `<div class="col-md-4"><div class="surface-card h-100 d-flex gap-3"><div class="task-symbol"><i class="bi bi-${i}"></i></div><div><div class="fw-bold">${t}</div><div class="small muted">${d}</div></div></div></div>`).join('')}</div>`;
+    return;
+  }
+  if (!wikiResults.length) { box.innerHTML = empty(`No se encontraron artículos para "${searchQuery}". Prueba con otras palabras o busca en la pestaña Web.`); return; }
+  box.innerHTML = `<p class="small muted mb-2">${wikiResults.length} resultados en la enciclopedia para <strong>${esc(searchQuery)}</strong></p>
+    <div class="surface-card">${wikiResults.map((r) => `<div class="wiki-row clickable" data-wiki="${esc(r.title)}">
+      ${r.thumb ? `<img class="wiki-thumb" src="${esc(r.thumb)}" alt="" loading="lazy">` : '<div class="wiki-thumb ph"><i class="bi bi-journal-text"></i></div>'}
+      <div class="flex-grow-1 min-w-0"><h6 class="fw-bold mb-1">${esc(r.title)}</h6><p class="small text-muted mb-0">${esc(r.extract || '')}</p></div>
+      <i class="bi bi-chevron-right muted"></i></div>`).join('')}</div>`;
+}
+async function wikiSearch(q) {
+  wikiArticle = null; wikiBusy = true; paintSearchResults();
+  logSearch(q, 'enciclopedia');
+  try {
+    const url = `${WIKI}/w/api.php?action=query&format=json&origin=*&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=12&prop=pageimages|extracts&exintro=1&explaintext=1&exsentences=2&exlimit=max&piprop=thumbnail&pithumbsize=160`;
+    const j = await (await fetch(url)).json();
+    wikiResults = Object.values(j.query?.pages || {}).sort((a, b) => a.index - b.index)
+      .map((p) => ({ title: p.title, extract: p.extract, thumb: safeWikiImg(p.thumbnail?.source) }));
+  } catch (err) {
+    console.error(err); wikiResults = null; notify('No se pudo conectar con la enciclopedia. Revisa tu conexión.', 'danger');
+  } finally { wikiBusy = false; paintSearchResults(); }
+}
+function safeWikiImg(src) {
+  if (!src) return null;
+  const s = src.startsWith('//') ? `https:${src}` : src;
+  return /^https:\/\/upload\.wikimedia\.org\//.test(s) ? s : null;
+}
+// Limpia el HTML del artículo: sin scripts, estilos ni atributos peligrosos
+function cleanWikiHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,style,link,meta,iframe,object,embed,form,input,button,noscript,audio,video,source,sup.reference,.mw-ref,.mw-references-wrap,.reflist,ol.references,.navbox,.metadata,.mw-editsection,.ambox,.noprint,.mw-empty-elt,.hatnote').forEach((n) => n.remove());
+  // Quita secciones finales de referencias / enlaces externos
+  doc.querySelectorAll('section').forEach((sec) => { const h = sec.querySelector('h2'); if (h && /referencias|notas|enlaces externos|bibliografía|véase también/i.test(h.textContent)) sec.remove(); });
+  const keep = { a: ['href'], img: ['src', 'alt', 'width', 'height'], td: ['colspan', 'rowspan'], th: ['colspan', 'rowspan'] };
+  for (const el of doc.body.querySelectorAll('*')) {
+    const tag = el.tagName.toLowerCase();
+    for (const at of [...el.attributes]) if (!(keep[tag] || []).includes(at.name)) el.removeAttribute(at.name);
+    if (tag === 'a') {
+      const h = el.getAttribute('href') || '';
+      if (h.startsWith('./') && !h.includes(':')) { el.setAttribute('data-wiki', decodeURIComponent(h.slice(2).split('#')[0]).replace(/_/g, ' ')); el.setAttribute('href', '#'); }
+      else if (/^https?:\/\//.test(h)) { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer'); }
+      else el.removeAttribute('href');
+    }
+    if (tag === 'img') { const s = safeWikiImg(el.getAttribute('src')); if (s) { el.setAttribute('src', s); el.setAttribute('loading', 'lazy'); } else el.remove(); }
+    if (tag === 'table') el.classList.add('table', 'table-sm');
+  }
+  return doc.body.innerHTML;
+}
+async function wikiOpen(title) {
+  wikiBusy = true; wikiArticle = null; searchTab = 'enciclopedia'; paintSearchResults();
+  window.scrollTo(0, 0);
+  try {
+    const res = await fetch(`${WIKI}/api/rest_v1/page/html/${encodeURIComponent(title.replace(/ /g, '_'))}?redirect=true`);
+    if (!res.ok) throw new Error(res.status);
+    const html = await res.text();
+    const t = new DOMParser().parseFromString(html, 'text/html').querySelector('title')?.textContent || title;
+    logSearch(t, 'articulo');
+    wikiArticle = { title: t, body: cleanWikiHtml(html), url: `${WIKI}/wiki/${encodeURIComponent(t.replace(/ /g, '_'))}` };
+  } catch (err) {
+    console.error(err); notify('No se pudo abrir el artículo.', 'danger');
+  } finally { wikiBusy = false; paintSearchResults(); }
+}
+function citation(a) {
+  const d = new Intl.DateTimeFormat('es-GT', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+  return `${a.title}. (s.f.). En Wikipedia, la enciclopedia libre. Recuperado el ${d} de ${a.url}`;
+}
+function paintArticle(box) {
+  const a = wikiArticle;
+  box.innerHTML = `<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+      <button class="btn btn-link ps-0" data-wiki-back><i class="bi bi-arrow-left"></i> ${wikiResults ? 'Volver a los resultados' : 'Volver'}</button>
+      <div class="ms-auto d-flex gap-2"><button class="btn btn-sm btn-outline-primary" data-copy-cite><i class="bi bi-quote me-1"></i>Copiar cita</button>
+      <a class="btn btn-sm btn-light" target="_blank" rel="noopener noreferrer" href="${esc(a.url)}"><i class="bi bi-box-arrow-up-right me-1"></i>Ver en Wikipedia</a></div></div>
+    <article class="surface-card wiki-article"><div class="wiki-source"><i class="bi bi-book-half me-1"></i>Enciclopedia · Wikipedia en español</div><h2 class="fw-bold mb-3">${esc(a.title)}</h2>${a.body}
+      <div class="cite-box mt-4"><div class="small fw-bold mb-1"><i class="bi bi-quote me-1"></i>Cómo citar esta fuente</div><div class="small">${esc(citation(a))}</div></div></article>`;
+}
+
+// ---- Web: Google Programmable Search con búsqueda segura ----
+function loadCse() {
+  if (cseReady) return cseReady;
+  cseReady = new Promise((resolve, reject) => {
+    window.__gcse = { parsetags: 'explicit', initializationCallback: resolve };
+    const s = document.createElement('script');
+    s.async = true; s.src = `https://cse.google.com/cse.js?cx=${encodeURIComponent(CSE_ID)}`;
+    s.onerror = () => { cseReady = null; reject(new Error('cse')); };
+    document.head.append(s);
+  });
+  return cseReady;
+}
+async function paintWeb(box) {
+  if (!CSE_ID) {
+    const g = `https://www.google.com/search?safe=active&q=${encodeURIComponent(searchQuery)}`;
+    box.innerHTML = `<div class="surface-card"><div class="d-flex gap-3"><div class="task-symbol"><i class="bi bi-globe2"></i></div><div>
+      <h6 class="fw-bold mb-1">La búsqueda web todavía no está activada</h6>
+      <p class="small muted mb-3">${isTeacher() ? 'Para ver resultados de internet aquí mismo hay que agregar el código del buscador seguro de Google en <code>js/config.js</code> (está explicado en el README).' : 'Tu docente aún no la ha activado. Mientras tanto usa la Enciclopedia o abre Google con búsqueda segura.'}</p>
+      ${searchQuery ? `<a class="btn btn-sm btn-primary" target="_blank" rel="noopener noreferrer" href="${esc(g)}"><i class="bi bi-box-arrow-up-right me-1"></i>Buscar "${esc(searchQuery)}" en Google (búsqueda segura)</a>` : ''}</div></div></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="surface-card web-results"><div class="small muted mb-2"><i class="bi bi-shield-check me-1"></i>Búsqueda segura activada. Los sitios se abren en una pestaña nueva.</div><div id="cseHost"></div></div>`;
+  try {
+    await loadCse();
+    const host = $('#cseHost');
+    if (!host) return;
+    google.search.cse.element.render({ div: 'cseHost', tag: 'searchresults-only', gname: 'aulaWeb', attributes: { safeSearch: 'active', linkTarget: '_blank', enableHistory: false } });
+    if (searchQuery) google.search.cse.element.getElement('aulaWeb').execute(searchQuery);
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = `<div class="alert alert-warning">No se pudo cargar el buscador web. Revisa tu conexión o el código del buscador en <code>js/config.js</code>.</div>`;
+  }
+}
+
+// ---- Historial de búsquedas (docente) ----
+const TIPO_BUSQ = { enciclopedia: ['Enciclopedia', 'pill-purple'], web: ['Web', 'pill-blue'], articulo: ['Leyó artículo', 'pill-green'] };
+async function loadHistory() {
+  const c = course(histCourse);
+  histRows = null; histErr = null;
+  const ids = c ? studentsOf(c.id).map((e) => e.alumna_id) : [];
+  if (!ids.length) { histRows = []; return; }
+  const r = await db.from('busquedas').select('*').in('alumna_id', ids).order('creado_en', { ascending: false }).limit(1000);
+  if (r.error) histErr = /busquedas|relation|schema/i.test(r.error.message) ? 'Falta ejecutar migracion-v9-historial-busquedas.sql en Supabase.' : errMsg(r.error);
+  else histRows = r.data || [];
+}
+async function paintHistory(box, reload = true) {
+  if (!courses.length) { box.innerHTML = empty('Primero crea un curso.'); return; }
+  if (!course(histCourse)) histCourse = courses[0].id;
+  const c = course(histCourse);
+  if (reload) {
+    box.innerHTML = '<div class="py-5 text-center"><div class="spinner-border text-primary"></div></div>';
+    const token = renderToken;
+    await loadHistory();
+    if (token !== renderToken || searchTab !== 'historial') return;
+  }
+  const st = studentsOf(c.id);
+  const userOf = (id) => st.find((e) => e.alumna_id === id)?.usuarios;
+  const head = `<div class="surface-card mb-3 d-flex flex-wrap align-items-center gap-2">
+      <select class="form-select form-select-sm" id="histCourseSelect" style="width:auto;min-width:220px">${courses.map((x) => `<option value="${esc(x.id)}" ${x.id === c.id ? 'selected' : ''}>${esc(x.nombre)} · ${esc(x.grado)} ${esc(x.seccion)}</option>`).join('')}</select>
+      <select class="form-select form-select-sm" id="histStudentSelect" style="width:auto;min-width:200px"><option value="">Todas las alumnas</option>${st.map((e) => `<option value="${esc(e.alumna_id)}" ${e.alumna_id === histStudent ? 'selected' : ''}>${esc(e.usuarios?.clave ?? '')} ${esc(listName(e.usuarios))}</option>`).join('')}</select>
+      <div class="input-icon flex-grow-1" style="max-width:300px"><i class="bi bi-funnel"></i><input class="form-control form-control-sm" id="histFilter" placeholder="Filtrar por palabra"></div>
+      <button class="btn btn-sm btn-outline-danger ms-auto" data-clear-history ${histRows?.length ? '' : 'disabled'}><i class="bi bi-trash me-1"></i>Borrar historial del curso</button></div>`;
+  if (histErr) { box.innerHTML = head + `<div class="alert alert-warning">${esc(histErr)}</div>`; return; }
+  const rows = (histRows || []).filter((r) => !histStudent || r.alumna_id === histStudent);
+  const freq = new Map();
+  for (const r of rows) if (r.tipo !== 'articulo') { const k = r.consulta.trim().toLowerCase(); freq.set(k, (freq.get(k) || 0) + 1); }
+  const top = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const plain = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  box.innerHTML = head + `<div class="row g-3 mb-3">
+      <div class="col-sm-4"><div class="stat-card h-100"><div class="stat-icon pill-purple"><i class="bi bi-search"></i></div><h3>${rows.filter((r) => r.tipo !== 'articulo').length}</h3><div class="stat-label">Búsquedas</div></div></div>
+      <div class="col-sm-4"><div class="stat-card h-100"><div class="stat-icon pill-green"><i class="bi bi-journal-text"></i></div><h3>${rows.filter((r) => r.tipo === 'articulo').length}</h3><div class="stat-label">Artículos leídos</div></div></div>
+      <div class="col-sm-4"><div class="stat-card h-100"><div class="stat-icon pill-blue"><i class="bi bi-people"></i></div><h3>${new Set(rows.map((r) => r.alumna_id)).size}/${st.length}</h3><div class="stat-label">Alumnas que buscaron</div></div></div></div>
+    ${top.length ? `<div class="surface-card mb-3"><h6 class="fw-bold mb-2">Lo más buscado</h6><div class="d-flex flex-wrap gap-2">${top.map(([k, n]) => `<span class="count-chip">${esc(k)} <strong>${n}</strong></span>`).join('')}</div></div>` : ''}
+    <div class="surface-card">${rows.length ? `<div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Fecha</th><th class="text-center">Clave</th><th>Alumna</th><th>Tipo</th><th>Búsqueda</th></tr></thead><tbody>${rows.map((r) => {
+        const u = userOf(r.alumna_id); const [tl, tc] = TIPO_BUSQ[r.tipo] || ['Búsqueda', 'pill-blue'];
+        return `<tr data-search="${esc(plain(`${r.consulta} ${listName(u)}`))}"><td class="small text-nowrap">${esc(fmt(r.creado_en))}</td><td class="text-center clave-cell">${esc(u?.clave ?? '—')}</td><td class="fw-semibold">${esc(listName(u))}</td><td>${badge(tl, tc)}</td><td>${esc(r.consulta)}</td></tr>`;
+      }).join('')}</tbody></table></div>${histRows?.length >= 1000 ? '<p class="small muted mt-2 mb-0">Se muestran las 1000 búsquedas más recientes.</p>' : ''}` : empty('Las alumnas de este curso aún no han buscado nada.')}</div>`;
+}
+async function clearHistory(btn) {
+  const c = course(histCourse);
+  const ids = c ? studentsOf(c.id).map((e) => e.alumna_id) : [];
+  if (!ids.length || !confirm(`¿Borrar todo el historial de búsquedas de las alumnas de ${c.nombre} ${c.seccion}?\nNo se puede deshacer.`)) return;
+  await busy(btn, async () => {
+    const r = await db.from('busquedas').delete().in('alumna_id', ids);
+    if (r.error) return notify(errMsg(r.error), 'danger');
+    notify('Historial borrado.');
+    await paintHistory($('#searchResults'));
+  });
+}
+$('#mainContent').addEventListener('change', (e) => {
+  if (e.target.id === 'histCourseSelect') { histCourse = e.target.value; histStudent = ''; paintHistory($('#searchResults')); }
+  if (e.target.id === 'histStudentSelect') { histStudent = e.target.value; paintHistory($('#searchResults'), false); }
+});
+$('#mainContent').addEventListener('input', (e) => {
+  if (e.target.id !== 'histFilter') return;
+  const q = e.target.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  document.querySelectorAll('#searchResults tr[data-search]').forEach((tr) => tr.classList.toggle('d-none', q && !tr.dataset.search.includes(q)));
+});
+
+$('#mainContent').addEventListener('submit', (e) => {
+  if (e.target.id !== 'searchForm') return;
+  e.preventDefault();
+  const q = e.target.elements.q.value.trim();
+  if (q.length < 2) return notify('Escribe al menos 2 letras.', 'warning');
+  searchQuery = q;
+  if (searchTab === 'historial') searchTab = 'enciclopedia';
+  if (searchTab === 'web') { logSearch(q, 'web'); renderSearch(); } else { if (!$('[data-search-tab].on[data-search-tab="enciclopedia"]')) renderSearch(); wikiSearch(q); }
+});
+$('#mainContent').addEventListener('click', (e) => {
+  if (view !== 'buscar') return;
+  let b;
+  if ((b = e.target.closest('[data-search-tab]'))) {
+    searchTab = b.dataset.searchTab;
+    document.querySelectorAll('[data-search-tab]').forEach((x) => x.classList.toggle('on', x === b));
+    if (searchTab === 'enciclopedia' && searchQuery && !wikiResults && !wikiArticle) wikiSearch(searchQuery); else paintSearchResults();
+    return;
+  }
+  if ((b = e.target.closest('[data-wiki]'))) { e.preventDefault(); wikiOpen(b.dataset.wiki); return; }
+  if (e.target.closest('[data-wiki-back]')) { wikiArticle = null; paintSearchResults(); return; }
+  if ((b = e.target.closest('[data-clear-history]'))) { clearHistory(b); return; }
+  if (e.target.closest('[data-copy-cite]') && wikiArticle) {
+    const c = citation(wikiArticle);
+    navigator.clipboard?.writeText(c).then(() => notify('Cita copiada. Pégala en tu tarea.'), () => notify(c, 'info', 12000));
+  }
+});
 
 restore();

@@ -1,4 +1,4 @@
-# AulaNova — plataforma de tareas escolares
+# Villa de las Niñas — aula virtual
 
 Proyecto HTML + CSS + JavaScript + Bootstrap 5 + Supabase.
 
@@ -52,3 +52,32 @@ Edge Function `supabase/functions/gestionar-alumnas/index.ts`: publícala en Sup
 
 - Docente: crear cursos (con código de clase), publicar y eliminar avisos, crear/editar/eliminar tareas con tipo, instrucciones y material adjunto, ver quién entregó y quién no, inscribir o quitar alumnas, crear cuentas y cambiar contraseñas.
 - Alumna: unirse a una clase con código, ver detalle de cada tarea con instrucciones y material, entregar varios archivos, quitar archivos antes de la calificación, ver su nota y el comentario de la docente.
+
+## Versión 7 (material de lectura, consultas y agenda)
+
+Ejecuta `migracion-v7-material-consultas.sql` en Supabase > SQL Editor (una sola vez).
+
+- **Material de lectura**: la docente comparte archivos, enlaces o textos por curso que no son tareas (no se entregan ni se califican). Se guardan en el bucket `tareas-escolares`, carpeta `lectura/`.
+- **Consultas**: cada alumna puede escribir preguntas privadas a la docente del curso (generales o sobre una tarea) y conversar hasta marcarla como resuelta. Solo la ven la alumna y la docente.
+- **Agenda**: vista de mes, semana o lista con las fechas de entrega. Colores: pendiente, entregada o vencida (alumna) y un color por curso (docente).
+- Nuevo diseño verde azulado con estilo tecnológico y nombre "Villa de las Niñas".
+
+## Versión 8 (respaldo en Excel y limpieza)
+
+Ejecuta `migracion-v8-respaldo-limpieza.sql` en Supabase > SQL Editor (después de la v7).
+
+En el menú de la docente, **Respaldo y limpieza**:
+1. Elige el curso y descarga el Excel (hojas Notas, Entregas, Tareas, Consultas, Material y Avisos).
+2. Después de descargarlo se habilita el borrado: eliges qué borrar (entregas y notas, tareas, consultas, material, avisos, grupos o quitar alumnas), escribes BORRAR y confirmas. Se borran también los archivos del almacenamiento. El curso y las cuentas de las alumnas se conservan. No se puede deshacer.
+
+## Versión 9 (buscar información e historial)
+
+Ejecuta `migracion-v9-historial-busquedas.sql` en Supabase > SQL Editor.
+
+- **Buscar información** (alumnas y docente): pestaña *Enciclopedia* busca en Wikipedia en español y muestra el artículo dentro de la plataforma, con botón para copiar la cita. Funciona sin configurar nada.
+- Pestaña *Web*: resultados de Google con búsqueda segura (SafeSearch). Para activarla:
+  1. Entra a https://programmablesearchengine.google.com con una cuenta de Google del colegio y crea un buscador.
+  2. En "Qué buscar" elige **Buscar en toda la web** y activa **Búsqueda segura**.
+  3. Copia el **ID del motor de búsqueda** (cx) y pégalo en `js/config.js` en `GOOGLE_CSE_ID`.
+  Los sitios se abren en una pestaña nueva (la mayoría de páginas no permiten mostrarse dentro de otra).
+- **Historial de alumnas** (solo docente): búsquedas y artículos leídos por curso o por alumna, lo más buscado y botón para borrar el historial del curso. Las alumnas ven un aviso de que su docente puede ver sus búsquedas.
