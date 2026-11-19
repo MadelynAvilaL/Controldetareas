@@ -33,6 +33,23 @@ const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
 const today = cap(new Intl.DateTimeFormat('es-GT', { dateStyle: 'full' }).format(new Date()));
 const setupDone = SUPABASE_URL.startsWith('https://') && !SUPABASE_URL.includes('TU-PROYECTO') && !SUPABASE_ANON_KEY.startsWith('TU_');
 const db = setupDone ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+// Supabase rechaza direcciones muy largas ("Bad Request") cuando se piden
+// cientos de ids juntos. Esto parte la lista en grupos de 80 y une el resultado.
+const IN_CHUNK = 80;
+async function inChunks(ids, build, sortFn = null, size = IN_CHUNK) {
+  const list = [...new Set(ids)];
+  if (!list.length) return { data: [], error: null };
+  const parts = [];
+  for (let i = 0; i < list.length; i += size) parts.push(list.slice(i, i + size));
+  const results = await Promise.all(parts.map((p) => build(p)));
+  const bad = results.find((r) => r.error);
+  if (bad) return { data: null, error: bad.error };
+  const data = results.flatMap((r) => r.data || []);
+  if (sortFn) data.sort(sortFn);
+  return { data, error: null };
+}
+const byDate = (col, desc = false) => (a, b) => (desc ? -1 : 1) * (new Date(a[col]) - new Date(b[col]));
+
 const modal = (id) => bootstrap.Modal.getOrCreateInstance($(id));
 
 // Estado
@@ -310,9 +327,14 @@ async function refresh(quiet = false) {
 
       const taskIds = tasks.map((t) => t.id);
       if (taskIds.length) {
-        let sq = db.from('entregas').select('*, usuarios:alumna_id(nombre,apellido,usuario)').in('tarea_id', taskIds).order('fecha_entrega', { ascending: false });
-        if (!isTeacher() && !hasV5) sq = sq.eq('alumna_id', me.id); // con v5, la alumna también ve la entrega de su grupo
-        const [sr, mr] = await Promise.all([sq, db.from('archivos_tarea').select('*').in('tarea_id', taskIds).order('creado_en')]);
+        const onlyMine = !isTeacher() && !hasV5; // con v5, la alumna también ve la entrega de su grupo
+        const [sr, mr] = await Promise.all([
+          inChunks(taskIds, (p) => {
+            let q = db.from('entregas').select('*, usuarios:alumna_id(nombre,apellido,usuario)').in('tarea_id', p);
+            return onlyMine ? q.eq('alumna_id', me.id) : q;
+          }, byDate('fecha_entrega', true), 10), // 10 tareas por consulta: así no se pasa de 1000 filas
+          inChunks(taskIds, (p) => db.from('archivos_tarea').select('*').in('tarea_id', p), byDate('creado_en')),
+        ]);
         if (sr.error) throw sr.error;
         submissions = sr.data || [];
         if (mr.error) console.warn('archivos_tarea no disponible (¿falta migracion-v3.sql?):', mr.error.message);
@@ -321,8 +343,8 @@ async function refresh(quiet = false) {
         const subIds = submissions.map((s) => s.id);
         if (subIds.length) {
           const [gr, fr] = await Promise.all([
-            db.from('calificaciones').select('*').in('entrega_id', subIds),
-            db.from('archivos_entrega').select('*').in('entrega_id', subIds).order('creado_en'),
+            inChunks(subIds, (p) => db.from('calificaciones').select('*').in('entrega_id', p)),
+            inChunks(subIds, (p) => db.from('archivos_entrega').select('*').in('entrega_id', p), byDate('creado_en')),
           ]);
           if (gr.error) throw gr.error;
           if (fr.error) throw fr.error;
@@ -1658,8 +1680,8 @@ async function loadV7(ids) {
   }
   readings = mr.data || []; queries = qr.data || [];
   const [fr, msr] = await Promise.all([
-    readings.length ? db.from('archivos_material').select('*').in('material_id', readings.map((m) => m.id)).order('creado_en') : { data: [] },
-    queries.length ? db.from('consulta_mensajes').select('*').in('consulta_id', queries.map((q) => q.id)).order('creado_en') : { data: [] },
+    inChunks(readings.map((m) => m.id), (p) => db.from('archivos_material').select('*').in('material_id', p), byDate('creado_en')),
+    inChunks(queries.map((q) => q.id), (p) => db.from('consulta_mensajes').select('*').in('consulta_id', p), byDate('creado_en')),
   ]);
   if (fr.error) console.warn(fr.error.message); else readingFiles = fr.data || [];
   if (msr.error) console.warn(msr.error.message); else queryMsgs = msr.data || [];
@@ -2318,7 +2340,8 @@ async function loadHistory() {
   histRows = null; histErr = null;
   const ids = c ? studentsOf(c.id).map((e) => e.alumna_id) : [];
   if (!ids.length) { histRows = []; return; }
-  const r = await db.from('busquedas').select('*').in('alumna_id', ids).order('creado_en', { ascending: false }).limit(1000);
+  const r = await inChunks(ids, (p) => db.from('busquedas').select('*').in('alumna_id', p).order('creado_en', { ascending: false }).limit(1000), byDate('creado_en', true));
+  if (r.data) r.data = r.data.slice(0, 1000);
   if (r.error) histErr = /busquedas|relation|schema/i.test(r.error.message) ? 'Falta ejecutar migracion-v9-historial-busquedas.sql en Supabase.' : errMsg(r.error);
   else histRows = r.data || [];
 }
@@ -2360,7 +2383,7 @@ async function clearHistory(btn) {
   const ids = c ? studentsOf(c.id).map((e) => e.alumna_id) : [];
   if (!ids.length || !confirm(`¿Borrar todo el historial de búsquedas de las alumnas de ${c.nombre} ${c.seccion}?\nNo se puede deshacer.`)) return;
   await busy(btn, async () => {
-    const r = await db.from('busquedas').delete().in('alumna_id', ids);
+    const r = await inChunks(ids, (p) => db.from('busquedas').delete().in('alumna_id', p));
     if (r.error) return notify(errMsg(r.error), 'danger');
     notify('Historial borrado.');
     await paintHistory($('#searchResults'));
