@@ -328,3 +328,17 @@ button.top-avatar{cursor:pointer}
 @media(max-width:767px){.wiki-article figure,.wiki-article .infobox{float:none;margin:0 auto 12px;max-width:100%}.search-hero{padding:22px}}
 .web-results .gsc-control-cse{padding:0;border:0;background:transparent}
 .web-results .gs-title,.web-results .gs-title *{color:var(--brand-dark)!important}
+
+/* ===== v10: espacio compartido ===== */
+.share-thread{min-height:320px}
+.share-reply{align-items:flex-end}
+.share-file{display:flex;align-items:center;gap:6px;margin-top:8px;padding:7px 10px;border-radius:10px;background:#ffffffb3;border:1px solid var(--line);font-size:.85rem;color:var(--brand-dark);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bubble-row.mine .share-file{background:#ffffff26;border-color:#ffffff40;color:#fff}
+.share-del{border:0;background:none;padding:0;color:inherit;opacity:.55;font-size:.8rem}
+.share-del:hover{opacity:1;color:#d0503f}
+.bubble-row.mine .share-del:hover{color:#fff}
+.share-doc{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)}
+.share-doc:last-child{border-bottom:0}
+.share-doc>i{font-size:1.2rem;color:var(--brand)}
+.share-reply label.btn{white-space:nowrap;display:inline-flex;align-items:center;flex-direction:row;gap:2px;width:auto;height:auto;padding:5px 12px}
+.share-reply .btn[type=submit]{flex-shrink:0}

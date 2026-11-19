@@ -379,7 +379,7 @@ function render() {
   const views = {
     inicio: renderHome, cursos: renderCourses, tareas: () => renderTasks(viewArg), tarea: () => renderTaskDetail(viewArg),
     entregas: renderSubmissions, entrega: () => renderSubmissionDetail(viewArg), alumnas: renderStudents, anuncios: renderNotices,
-    agenda: renderAgenda, buscar: renderSearch, respaldo: renderBackup, material: renderMaterial, consultas: renderQueries, consulta: () => renderQueryDetail(viewArg),
+    agenda: renderAgenda, buscar: renderSearch, respaldo: renderBackup, material: renderMaterial, consultas: renderQueries, consulta: () => renderQueryDetail(viewArg), compartido: renderShared,
   };
   paintQueryBadge();
   return (views[view] || renderHome)();
@@ -2425,5 +2425,193 @@ $('#mainContent').addEventListener('click', (e) => {
     navigator.clipboard?.writeText(c).then(() => notify('Cita copiada. Pégala en tu tarea.'), () => notify(c, 'info', 12000));
   }
 });
+
+
+// =====================================================================
+// v10: ESPACIO COMPARTIDO POR CURSO (tipo chat)
+// Las alumnas solo lo ven si la docente lo abrió. La docente siempre lo ve.
+// =====================================================================
+const SHARE_BUCKET = 'compartidos';
+const hasV10 = (c) => !!c && 'compartir_abierto' in c;
+let shareCourse = null, shareMsgs = [], shareErr = null, shareTimer = null;
+const shareNames = new Map(), shareSigned = new Map();
+const shareCourses = () => (isTeacher() ? courses : courses.filter((c) => c.compartir_abierto));
+const fmtSize = (n) => (!n ? '' : n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+async function loadShared(c) {
+  shareErr = null;
+  const r = await db.from('compartidos').select('*').eq('curso_id', c.id).order('creado_en', { ascending: false }).limit(300);
+  if (r.error) {
+    shareErr = /compartidos|relation|schema|column/i.test(r.error.message) ? 'Falta ejecutar migracion-v10-espacio-compartido.sql en Supabase.' : errMsg(r.error);
+    shareMsgs = [];
+    return;
+  }
+  shareMsgs = (r.data || []).sort(byDate('creado_en'));
+  // Nombres de quienes escribieron (las alumnas ven a sus compañeras de curso)
+  for (const e of enrollments.filter((x) => x.curso_id === c.id)) if (e.usuarios) shareNames.set(e.alumna_id, e.usuarios);
+  shareNames.set(me.id, me);
+  const missing = [...new Set(shareMsgs.map((m) => m.autor_id))].filter((id) => id !== c.docente_id && !shareNames.has(id));
+  if (missing.length) {
+    const u = await inChunks(missing, (p) => db.from('usuarios').select('id,nombre,apellido,clave').in('id', p));
+    for (const x of u.data || []) shareNames.set(x.id, x);
+  }
+  const paths = shareMsgs.map((m) => m.ruta_storage).filter((p) => p && !shareSigned.has(p));
+  if (paths.length) {
+    const { data } = await db.storage.from(SHARE_BUCKET).createSignedUrls(paths, 3600);
+    for (const d of data || []) if (d.signedUrl) shareSigned.set(d.path, d.signedUrl);
+  }
+}
+
+async function renderShared() {
+  setTitle('Espacio compartido');
+  const teacher = isTeacher();
+  if (!courses.length) { $('#mainContent').innerHTML = empty(teacher ? 'Primero crea un curso.' : 'Primero únete a una clase.'); return; }
+  if (teacher && !courses.some(hasV10)) {
+    $('#mainContent').innerHTML = '<div class="alert alert-warning">Para usar el espacio compartido ejecuta <strong>migracion-v10-espacio-compartido.sql</strong> en Supabase.</div>';
+    return;
+  }
+  const list = shareCourses();
+  if (!list.length) {
+    $('#mainContent').innerHTML = `<div class="surface-card text-center py-5"><i class="bi bi-lock fs-1 muted"></i><h5 class="fw-bold mt-3">El espacio compartido está cerrado</h5><p class="muted mb-0">Tu docente todavía no ha abierto un espacio para compartir documentos en tus cursos.</p></div>`;
+    return;
+  }
+  if (!list.some((c) => c.id === shareCourse)) shareCourse = list[0].id;
+  const c = course(shareCourse);
+  const token = renderToken;
+  loading();
+  await loadShared(c);
+  if (token !== renderToken) return;
+
+  const select = `<select class="form-select form-select-sm" id="shareCourseSelect" style="width:auto;min-width:240px">${list.map((x) => `<option value="${esc(x.id)}" ${x.id === c.id ? 'selected' : ''}>${esc(x.nombre)} · ${esc(x.grado)} ${esc(x.seccion)}${teacher ? (x.compartir_abierto ? ' · abierto' : ' · cerrado') : ''}</option>`).join('')}</select>`;
+  const control = teacher ? `<div class="surface-card mb-3 d-flex flex-wrap align-items-center gap-3">
+      <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" id="shareOpen" ${c.compartir_abierto ? 'checked' : ''}>
+      <label class="form-check-label fw-semibold" for="shareOpen">Espacio abierto para las alumnas de este curso</label></div>
+      <span class="small ${c.compartir_abierto ? 'text-success' : 'muted'}"><i class="bi bi-${c.compartir_abierto ? 'unlock' : 'lock'} me-1"></i>${c.compartir_abierto ? 'Abierto: las alumnas ven, comparten y escriben.' : 'Cerrado: las alumnas no ven nada. Solo tú ves lo que ya se compartió.'}</span></div>` : '';
+  $('#mainContent').innerHTML = `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div><h4 class="section-heading mb-1">Espacio compartido</h4><p class="muted mb-0">${teacher ? 'Lo que comparten tus alumnas en cada curso. Puedes escribir y borrar mensajes.' : 'Comparte documentos y enlaces con tus compañeras. Tu docente ve todo lo que se comparte.'}</p></div>${select}</div>
+    ${control}${shareErr ? `<div class="alert alert-warning">${esc(shareErr)}</div>` : ''}
+    <div class="row g-4"><div class="col-lg-8"><div class="surface-card chat-card">
+      <div class="chat-thread share-thread" id="shareThread"></div>
+      <form id="shareForm" class="chat-reply share-reply mt-3">
+        <div class="flex-grow-1">
+          <textarea class="form-control mb-2" name="texto" rows="2" maxlength="4000" placeholder="Escribe un mensaje… (Ctrl+Enter para enviar)"></textarea>
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            <label class="btn btn-sm btn-outline-secondary mb-0"><i class="bi bi-paperclip me-1"></i>Adjuntar<input type="file" id="shareFile" class="d-none" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip"></label>
+            <span class="small muted text-truncate" id="shareFileName" style="max-width:220px"></span>
+            <input type="url" name="enlace" class="form-control form-control-sm" placeholder="Enlace (opcional) https://…" style="max-width:280px">
+          </div>
+        </div>
+        <button class="btn btn-primary" type="submit" id="shareSendBtn" title="Enviar"><i class="bi bi-send-fill"></i></button>
+      </form>
+    </div></div>
+    <div class="col-lg-4"><div class="surface-card"><h6 class="fw-bold mb-3"><i class="bi bi-folder2-open me-1"></i>Documentos compartidos</h6><div id="shareDocs"></div></div></div></div>`;
+  paintShareThread(c, true);
+  startSharePoll();
+}
+
+function paintShareThread(c, toBottom = false) {
+  const th = $('#shareThread');
+  if (!th) return;
+  const nearBottom = th.scrollHeight - th.scrollTop - th.clientHeight < 80;
+  const teacher = isTeacher();
+  th.innerHTML = shareMsgs.map((m) => {
+    const mine = m.autor_id === me.id;
+    const isDoc = m.autor_id === c.docente_id;
+    const u = shareNames.get(m.autor_id);
+    const who = mine ? 'Tú' : isDoc ? 'Docente' : u ? fullName(u) : 'Compañera';
+    const av = isDoc ? '<span class="avatar avatar-sm teacher-av"><i class="bi bi-person-workspace"></i></span>' : avatarHtml(u);
+    const url = m.ruta_storage && shareSigned.get(m.ruta_storage);
+    const file = m.ruta_storage ? (url
+      ? `<a class="share-file" target="_blank" rel="noopener noreferrer" href="${esc(url)}"><i class="bi bi-file-earmark-arrow-down"></i> ${esc(m.nombre_archivo)} <span class="opacity-75">${esc(fmtSize(m.tamano_bytes))}</span></a>`
+      : `<span class="share-file"><i class="bi bi-file-earmark"></i> ${esc(m.nombre_archivo)}</span>`) : '';
+    const link = safeHttpUrl(m.enlace) ? `<a class="share-file" target="_blank" rel="noopener noreferrer" href="${esc(safeHttpUrl(m.enlace))}"><i class="bi bi-link-45deg"></i> ${esc(new URL(m.enlace).hostname)}</a>` : '';
+    const del = teacher || (mine && c.compartir_abierto) ? `<button class="share-del" data-del-share="${esc(m.id)}" title="Borrar mensaje"><i class="bi bi-trash"></i></button>` : '';
+    return `<div class="bubble-row ${mine ? 'mine' : ''}">${mine ? '' : av}<div class="bubble"><div class="bubble-who d-flex justify-content-between gap-3"><span>${esc(who)} · ${esc(fmt(m.creado_en))}</span>${del}</div>${m.texto ? `<div style="white-space:pre-wrap">${esc(m.texto)}</div>` : ''}${file}${link}</div></div>`;
+  }).join('') || `<div class="text-center muted py-5"><i class="bi bi-chat-square-text fs-2"></i><p class="mt-2 mb-0">Todavía no hay nada compartido en este curso.${teacher ? '' : ' ¡Sé la primera!'}</p></div>`;
+  if (toBottom || nearBottom) th.scrollTop = th.scrollHeight;
+  const docs = shareMsgs.filter((m) => m.ruta_storage || safeHttpUrl(m.enlace)).reverse();
+  $('#shareDocs').innerHTML = docs.length ? docs.map((m) => {
+    const url = m.ruta_storage ? shareSigned.get(m.ruta_storage) : safeHttpUrl(m.enlace);
+    const name = m.ruta_storage ? m.nombre_archivo : new URL(m.enlace).hostname;
+    const u = shareNames.get(m.autor_id);
+    const who = m.autor_id === me.id ? 'Tú' : m.autor_id === c.docente_id ? 'Docente' : u ? fullName(u) : 'Compañera';
+    return `<div class="share-doc"><i class="bi bi-${m.ruta_storage ? 'file-earmark-text' : 'link-45deg'}"></i><div class="min-w-0"><a class="d-block text-truncate fw-semibold" target="_blank" rel="noopener noreferrer" href="${esc(url || '#')}">${esc(name)}</a><div class="small muted text-truncate">${esc(who)} · ${esc(fmt(m.creado_en))}</div></div></div>`;
+  }).join('') : '<p class="small muted mb-0">Aún no se han compartido documentos ni enlaces.</p>';
+}
+
+// Revisa si hay mensajes nuevos cada 15 segundos mientras el chat está abierto
+function startSharePoll() {
+  clearInterval(shareTimer);
+  shareTimer = setInterval(async () => {
+    if (view !== 'compartido' || !$('#shareThread')) { clearInterval(shareTimer); return; }
+    if (document.hidden) return;
+    const c = course(shareCourse);
+    if (!c) return;
+    const before = shareMsgs.map((m) => m.id).join();
+    await loadShared(c);
+    if (shareMsgs.map((m) => m.id).join() !== before) paintShareThread(c);
+  }, 15000);
+}
+
+$('#mainContent').addEventListener('change', async (e) => {
+  if (e.target.id === 'shareCourseSelect') { shareCourse = e.target.value; renderShared(); }
+  if (e.target.id === 'shareFile') { const f = e.target.files[0]; $('#shareFileName').textContent = f ? `${f.name} (${fmtSize(f.size)})` : ''; }
+  if (e.target.id === 'shareOpen') {
+    const c = course(shareCourse);
+    const open = e.target.checked;
+    if (open && !confirm(`¿Abrir el espacio compartido de ${c.nombre} ${c.seccion}?\n\nLas alumnas del curso podrán ver lo que se comparte, subir documentos y escribir. Tú verás todo.`)) { e.target.checked = false; return; }
+    const r = await db.from('cursos').update({ compartir_abierto: open }).eq('id', c.id);
+    if (r.error) { e.target.checked = !open; return notify(errMsg(r.error), 'danger'); }
+    c.compartir_abierto = open;
+    notify(open ? 'Espacio abierto para las alumnas.' : 'Espacio cerrado. Las alumnas ya no ven nada.');
+    renderShared();
+  }
+});
+$('#mainContent').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest('#shareForm')) { e.preventDefault(); $('#shareSendBtn').click(); }
+});
+$('#mainContent').addEventListener('submit', async (e) => {
+  if (e.target.id !== 'shareForm') return;
+  e.preventDefault();
+  const c = course(shareCourse);
+  const f = e.target;
+  const texto = f.elements.texto.value.trim();
+  const enlace = f.elements.enlace.value.trim();
+  const file = $('#shareFile').files[0];
+  if (!texto && !enlace && !file) return notify('Escribe un mensaje, adjunta un archivo o pega un enlace.', 'warning');
+  if (enlace && !safeHttpUrl(enlace)) return notify('El enlace debe empezar con https:// o http://.', 'warning');
+  if (file) { const bad = checkFiles([file]); if (bad) return notify(bad, 'warning'); }
+  await busy($('#shareSendBtn'), async () => {
+    let meta = {};
+    if (file) {
+      const path = `${c.id}/${me.id}/${crypto.randomUUID()}-${safeName(file.name)}`;
+      const up = await db.storage.from(SHARE_BUCKET).upload(path, file, { upsert: false, contentType: mimeFor(file.name) });
+      if (up.error) return notify(`No se pudo subir el archivo: ${up.error.message}`, 'danger');
+      meta = { nombre_archivo: file.name, ruta_storage: path, tipo_archivo: mimeFor(file.name), tamano_bytes: file.size };
+    }
+    const r = await db.from('compartidos').insert({ curso_id: c.id, autor_id: me.id, texto: texto || null, enlace: enlace || null, ...meta });
+    if (r.error) {
+      if (meta.ruta_storage) await db.storage.from(SHARE_BUCKET).remove([meta.ruta_storage]);
+      return notify(/row-level|policy/i.test(r.error.message) ? 'El espacio compartido de este curso está cerrado.' : errMsg(r.error), 'danger');
+    }
+    f.reset(); $('#shareFileName').textContent = '';
+    await loadShared(c);
+    paintShareThread(c, true);
+  });
+});
+$('#mainContent').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-del-share]');
+  if (!b) return;
+  const m = shareMsgs.find((x) => x.id === b.dataset.delShare);
+  if (!m || !confirm('¿Borrar este mensaje' + (m.ruta_storage ? ' y su archivo' : '') + '?')) return;
+  const r = await db.from('compartidos').delete().eq('id', m.id);
+  if (r.error) return notify(errMsg(r.error), 'danger');
+  if (m.ruta_storage) await db.storage.from(SHARE_BUCKET).remove([m.ruta_storage]);
+  const c = course(shareCourse);
+  await loadShared(c);
+  paintShareThread(c);
+  notify('Mensaje borrado.');
+});
+
 
 restore();
