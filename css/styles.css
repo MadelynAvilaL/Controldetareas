@@ -342,3 +342,4 @@ button.top-avatar{cursor:pointer}
 .share-doc>i{font-size:1.2rem;color:var(--brand)}
 .share-reply label.btn{white-space:nowrap;display:inline-flex;align-items:center;flex-direction:row;gap:2px;width:auto;height:auto;padding:5px 12px}
 .share-reply .btn[type=submit]{flex-shrink:0}
+.dl-tree{font-family:var(--mono);background:#f4f8f8;border:1px solid var(--line);border-radius:10px;padding:10px 12px;line-height:1.7;color:#3f5558}

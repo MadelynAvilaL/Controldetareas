@@ -662,9 +662,10 @@ async function quickGrade(btn) {
 function renderSubmissions() {
   setTitle('Entregas', 'Mi espacio');
   if (!isTeacher()) { navigate('inicio'); return; }
-  const tabs = `<div class="btn-group mb-4" role="group">
+  const tabs = `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4"><div class="btn-group" role="group">
     <button class="btn btn-sm ${entregasTab === 'resumen' ? 'btn-primary' : 'btn-outline-primary'}" data-entregas-tab="resumen"><i class="bi bi-bar-chart me-1"></i>Resumen</button>
-    <button class="btn btn-sm ${entregasTab === 'lista' ? 'btn-primary' : 'btn-outline-primary'}" data-entregas-tab="lista"><i class="bi bi-inboxes me-1"></i>Lista de entregas</button></div>`;
+    <button class="btn btn-sm ${entregasTab === 'lista' ? 'btn-primary' : 'btn-outline-primary'}" data-entregas-tab="lista"><i class="bi bi-inboxes me-1"></i>Lista de entregas</button></div>
+    <button class="btn btn-sm btn-outline-primary" data-open-download><i class="bi bi-file-earmark-zip me-1"></i>Descargar tareas (ZIP)</button></div>`;
   if (entregasTab === 'resumen') { $('#mainContent').innerHTML = tabs + dashboardHtml(); return; }
   const list = submissions.filter(hasWork).filter((s) => !dashCourse || task(s.tarea_id)?.curso_id === dashCourse);
   const rows = list.map((s) => {
@@ -2612,6 +2613,163 @@ $('#mainContent').addEventListener('click', async (e) => {
   paintShareThread(c);
   notify('Mensaje borrado.');
 });
+
+
+
+// =====================================================================
+// DESCARGAR TAREAS EN ZIP: Curso / clave - alumna / tarea / archivos
+// =====================================================================
+let jszipLoading = null;
+function loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return (jszipLoading ||= new Promise((ok, fail) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    sc.onload = () => ok(window.JSZip);
+    sc.onerror = () => { jszipLoading = null; fail(new Error('No se pudo cargar el compresor ZIP. Revisa tu conexión.')); };
+    document.head.append(sc);
+  }));
+}
+// Nombres válidos para carpetas y archivos en Windows
+const cleanName = (v) => String(v ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').replace(/[. ]+$/, '').trim().slice(0, 80) || 'sin nombre';
+const studentFolder = (u) => cleanName(`${u?.clave ? String(u.clave).padStart(2, '0') + ' - ' : ''}${listName(u)}`);
+
+function ensureDownloadModal() {
+  if ($('#downloadModal')) return;
+  document.body.insertAdjacentHTML('beforeend', `<div class="modal fade" id="downloadModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title"><i class="bi bi-file-earmark-zip me-1"></i>Descargar tareas</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+      <label class="form-label">Curso</label><select class="form-select mb-3" id="dlCourse"></select>
+      <label class="form-label">Tareas</label><select class="form-select mb-3" id="dlTask"></select>
+      <div class="form-check mb-3"><input class="form-check-input" type="checkbox" id="dlNotes" checked><label class="form-check-label" for="dlNotes">Incluir respuestas escritas, enlaces, notas y un resumen de notas (Excel)</label></div>
+      <div class="dl-tree small mb-3"><i class="bi bi-folder2"></i> <span id="dlRoot"></span><br>&nbsp;&nbsp;└ <i class="bi bi-folder2"></i> 01 - Apellido, Nombre<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ <i class="bi bi-folder2"></i> Nombre de la tarea<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ <i class="bi bi-file-earmark"></i> archivos de la alumna</div>
+      <div class="alert alert-info small mb-0" id="dlInfo"></div>
+      <div class="progress mt-3 d-none" id="dlProgressWrap" style="height:10px"><div class="progress-bar" id="dlProgress" style="width:0%"></div></div>
+      <div class="small muted mt-2" id="dlStatus"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cerrar</button><button class="btn btn-primary" id="dlStart"><i class="bi bi-download me-1"></i>Descargar ZIP</button></div>
+  </div></div></div>`);
+  $('#dlCourse').addEventListener('change', () => { fillDownloadTasks(); updateDownloadInfo(); });
+  $('#dlTask').addEventListener('change', updateDownloadInfo);
+  $('#dlStart').addEventListener('click', startDownload);
+}
+function openDownloadModal() {
+  if (!courses.length) return notify('Primero crea un curso.', 'warning');
+  ensureDownloadModal();
+  $('#dlCourse').innerHTML = courses.map((c) => `<option value="${esc(c.id)}" ${c.id === dashCourse ? 'selected' : ''}>${esc(c.nombre)} · ${esc(c.grado)} ${esc(c.seccion)}</option>`).join('');
+  fillDownloadTasks();
+  updateDownloadInfo();
+  $('#dlProgressWrap').classList.add('d-none'); $('#dlStatus').textContent = '';
+  modal('#downloadModal').show();
+}
+function fillDownloadTasks() {
+  const ts = tasks.filter((t) => t.curso_id === $('#dlCourse').value);
+  $('#dlTask').innerHTML = `<option value="">Todas las tareas (${ts.length})</option>${ts.map((t) => `<option value="${esc(t.id)}">${esc(t.titulo)}</option>`).join('')}`;
+}
+function downloadSelection() {
+  const c = course($('#dlCourse').value);
+  const ts = tasks.filter((t) => t.curso_id === c.id && (!$('#dlTask').value || t.id === $('#dlTask').value));
+  const st = studentsOf(c.id);
+  const items = [];
+  for (const en of st) for (const t of ts) {
+    const x = submissionOf(t.id, en.alumna_id);
+    if (x) for (const f of filesFor(x.id)) items.push({ en, t, x, f });
+  }
+  return { c, ts, st, items };
+}
+function updateDownloadInfo() {
+  const { c, ts, st, items } = downloadSelection();
+  const bytes = items.reduce((n, i) => n + (Number(i.f.tamano_bytes) || 0), 0);
+  const withWork = new Set(items.map((i) => i.en.alumna_id)).size;
+  $('#dlRoot').textContent = cleanName(`${c.nombre} ${c.grado} ${c.seccion}`);
+  $('#dlInfo').innerHTML = `${st.length} alumnas · ${ts.length} tarea(s) · <strong>${items.length} archivos</strong> (${fmtSize(bytes) || '0 KB'}) de ${withWork} alumnas.${items.length > 150 || bytes > 150 * 1048576 ? '<br>Son bastantes archivos: la descarga puede tardar unos minutos. No cierres la página.' : ''}`;
+  $('#dlStart').disabled = !st.length || !ts.length;
+}
+
+async function startDownload() {
+  const btn = $('#dlStart');
+  const notes = $('#dlNotes').checked;
+  const { c, ts, st, items } = downloadSelection();
+  const bar = $('#dlProgress'), status = $('#dlStatus');
+  btn.disabled = true;
+  $('#dlProgressWrap').classList.remove('d-none');
+  try {
+    status.textContent = 'Preparando…';
+    const JSZip = await loadJSZip();
+    const zip = new JSZip();
+    const rootName = cleanName(`${c.nombre} ${c.grado} ${c.seccion}`);
+    const root = zip.folder(rootName);
+    const used = new Set();
+    const uniquePath = (p) => { let q = p, n = 2; while (used.has(q.toLowerCase())) { q = p.replace(/(\.[^./]+)?$/, ` (${n++})$1`); } used.add(q.toLowerCase()); return q; };
+
+    // Carpetas por alumna, con su respuesta escrita y nota de cada tarea
+    for (const en of st) {
+      const folder = studentFolder(en.usuarios);
+      let any = false;
+      for (const t of ts) {
+        const x = submissionOf(t.id, en.alumna_id);
+        const g = x && gradeFor(x.id);
+        if (!x || (!hasWork(x) && !g)) continue;
+        any = true;
+        if (notes && (x.contenido || x.enlace || g)) {
+          const lines = [`Tarea: ${t.titulo}`, `Alumna: ${fullName(en.usuarios)}${en.usuarios?.clave ? ` (clave ${en.usuarios.clave})` : ''}`];
+          if (hasWork(x)) lines.push(`Entregada: ${fmt(x.fecha_entrega)}${isLate(x) ? ' (TARDÍA)' : ''}`);
+          if (x.contenido) lines.push('', 'Respuesta:', x.contenido);
+          if (x.enlace) lines.push('', `Enlace: ${x.enlace}`);
+          lines.push('', g ? `Nota: ${g.nota} de ${t.puntos_maximos}` : `Nota: sin calificar (de ${t.puntos_maximos})`);
+          if (g?.comentario) lines.push(`Comentario: ${g.comentario}`);
+          root.file(uniquePath(`${folder}/${cleanName(t.titulo)}/respuesta.txt`), lines.join('\r\n'));
+        }
+      }
+      if (!any) root.file(uniquePath(`${folder}/SIN ENTREGAS.txt`), `${fullName(en.usuarios)} no tiene entregas en ${ts.length === 1 ? `"${ts[0].titulo}"` : 'estas tareas'}.`);
+    }
+
+    // Resumen de notas (se abre en Excel)
+    if (notes) {
+      const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const head = ['Clave', 'Alumna', 'Usuario', ...ts.map((t) => `${t.titulo} (/${t.puntos_maximos})`), 'Nota acumulada %'];
+      const rows = st.map((en) => [en.usuarios?.clave ?? '', listName(en.usuarios), en.usuarios?.usuario ?? '',
+        ...ts.map((t) => { const x = submissionOf(t.id, en.alumna_id); const g = x && gradeFor(x.id); return g ? String(g.nota).replace('.', ',') : hasWork(x) ? 'Entregó (sin nota)' : isExpired(t) ? 'No entregó' : 'Pendiente'; }),
+        (() => { const a = accumulated(en.alumna_id, c.id); return a.pct === null ? '' : String(Math.round(a.pct)); })()]);
+      root.file('Resumen de notas.csv', '﻿' + [head, ...rows].map((r) => r.map(q).join(';')).join('\r\n'));
+    }
+
+    // Descargar los archivos (4 a la vez)
+    const failed = [];
+    let done = 0;
+    const queue = [...items];
+    const worker = async () => {
+      while (queue.length) {
+        const it = queue.shift();
+        const { data, error } = await db.storage.from(BUCKET).download(it.f.ruta_storage);
+        if (error || !data) failed.push(`${listName(it.en.usuarios)} · ${it.t.titulo} · ${it.f.nombre_archivo}`);
+        else root.file(uniquePath(`${studentFolder(it.en.usuarios)}/${cleanName(it.t.titulo)}/${cleanName(it.f.nombre_archivo)}`), data);
+        done++;
+        bar.style.width = `${Math.round((done / Math.max(1, items.length)) * 85)}%`;
+        status.textContent = `Descargando archivos: ${done} de ${items.length}…`;
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+    if (failed.length) root.file('ARCHIVOS QUE NO SE PUDIERON DESCARGAR.txt', failed.join('\r\n'));
+
+    status.textContent = 'Armando el ZIP…';
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (m) => { bar.style.width = `${85 + Math.round(m.percent * 0.15)}%`; });
+    const taskPart = ts.length === 1 ? ` - ${cleanName(ts[0].titulo)}` : '';
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `${rootName}${taskPart} - tareas.zip` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    bar.style.width = '100%';
+    status.textContent = failed.length ? `Listo, pero ${failed.length} archivo(s) no se pudieron descargar (están anotados dentro del ZIP).` : `¡Listo! Se descargaron ${items.length} archivos.`;
+    notify('ZIP descargado.');
+  } catch (err) {
+    console.error(err);
+    status.textContent = '';
+    notify(`No se pudo crear el ZIP: ${err.message}`, 'danger', 9000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('#mainContent').addEventListener('click', (e) => { if (e.target.closest('[data-open-download]')) openDownloadModal(); });
 
 
 restore();
