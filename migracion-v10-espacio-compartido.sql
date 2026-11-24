@@ -62,7 +62,7 @@ CREATE POLICY compartidos_eliminar ON public.compartidos FOR DELETE TO authentic
 
 -- 4. Archivos (Storage: compartidos/<curso_id>/<autor_id>/archivo)
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('compartidos', 'compartidos', false, 10485760, ARRAY[
+VALUES ('compartidos', 'compartidos', false, 20971520, ARRAY[
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

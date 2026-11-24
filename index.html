@@ -84,7 +84,7 @@
         <div class="col-6"><label class="form-label">Puntos</label><input class="form-control" type="number" name="puntos_maximos" min="0.01" step="0.01" value="100" required></div>
         <div class="col-6"><label class="form-label">Fecha límite</label><input class="form-control" type="datetime-local" name="fecha_limite" required></div>
         <div class="col-12"><div class="form-check"><input class="form-check-input" type="checkbox" id="allowLate" name="permite_entrega_tardia"><label class="form-check-label" for="allowLate">Permitir entregas tardías</label></div></div>
-        <div class="col-12"><label class="form-label">Material de apoyo (opcional, máx. 10 MB por archivo)</label><input class="form-control" type="file" id="taskFiles" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip"><div class="form-text" id="taskFilesHint"></div></div>
+        <div class="col-12"><label class="form-label">Material de apoyo (opcional, máx. 20 MB por archivo)</label><input class="form-control" type="file" id="taskFiles" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip"><div class="form-text" id="taskFilesHint"></div></div>
       </div>
     </div>
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-primary" type="submit" id="taskSubmitBtn">Publicar tarea</button></div>
@@ -99,7 +99,7 @@
       <div id="submitTextFields"><label class="form-label">Comentario o respuesta</label><textarea class="form-control mb-3" name="contenido" rows="3" placeholder="Escribe aquí tu respuesta (opcional)"></textarea>
       <label class="form-label">Enlace a tu trabajo (opcional)</label><input class="form-control mb-3" type="url" name="enlace" placeholder="https://..."></div>
       <div id="submitExistingWrap" class="mb-3 d-none"><label class="form-label">Archivos que ya entregaste</label><div id="submitExistingFiles"></div></div>
-      <label class="form-label">Adjuntar archivos (opcional, máx. 10 MB cada uno)</label><input class="form-control" type="file" name="archivo" id="submissionFile" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip">
+      <label class="form-label">Adjuntar archivos (opcional, máx. 20 MB cada uno)</label><input class="form-control" type="file" name="archivo" id="submissionFile" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip">
     </div>
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-primary" type="submit" id="submitBtn">Enviar entrega</button></div>
   </form></div></div>
@@ -202,7 +202,7 @@
       <label class="form-label">Título</label><input class="form-control mb-3" name="titulo" maxlength="200" required placeholder="Ej. Lectura: Historia de la computación">
       <label class="form-label">Descripción (opcional)</label><textarea class="form-control mb-3" name="descripcion" rows="3" placeholder="¿Qué deben leer o revisar?"></textarea>
       <label class="form-label">Enlace (opcional)</label><input class="form-control mb-3" type="url" name="enlace" placeholder="https://...">
-      <label class="form-label">Archivos (opcional, máx. 10 MB cada uno)</label><input class="form-control" type="file" id="materialFiles" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip">
+      <label class="form-label">Archivos (opcional, máx. 20 MB cada uno)</label><input class="form-control" type="file" id="materialFiles" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.accdb,.mdb,.png,.jpg,.jpeg,.txt,.zip">
     </div>
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-primary" type="submit" id="materialSubmitBtn"><i class="bi bi-cloud-arrow-up me-1"></i>Compartir</button></div>
   </form></div></div>

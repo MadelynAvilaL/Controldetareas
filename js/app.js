@@ -8,7 +8,7 @@ const CSE_ID = String(CONFIG.GOOGLE_CSE_ID || '').trim(); // buscador seguro de 
 // =====================================================================
 const BUCKET = 'tareas-escolares';
 const ADMIN_FN = 'gestionar-alumnas';
-const MAX_FILE = 10 * 1024 * 1024;
+const MAX_FILE = 20 * 1024 * 1024;
 // Formatos permitidos y su tipo (para que el archivo se guarde con el tipo correcto)
 const MIME = {
   pdf: 'application/pdf',
@@ -165,7 +165,7 @@ const fileExt = (name) => (name.split('.').pop() || '').toLowerCase();
 const safeName = (n) => n.replace(/[^a-zA-Z0-9._-]/g, '_').slice(-100);
 function checkFiles(list) {
   for (const f of list) {
-    if (f.size > MAX_FILE) return `"${f.name}" supera los 10 MB.`;
+    if (f.size > MAX_FILE) return `"${f.name}" supera los 20 MB.`;
     if (!ALLOWED_EXT.includes(fileExt(f.name))) return `"${f.name}" tiene un formato no permitido.`;
   }
   return null;

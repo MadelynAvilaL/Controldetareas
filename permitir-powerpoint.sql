@@ -3,7 +3,7 @@
 -- en entregas y material de tareas. Ejecutar en Supabase > SQL Editor.
 -- =====================================================================
 UPDATE storage.buckets
-SET file_size_limit = 10485760,   -- 10 MB por archivo
+SET file_size_limit = 20971520,   -- 20 MB por archivo
     allowed_mime_types = ARRAY[
       'application/pdf',
       'application/msword',

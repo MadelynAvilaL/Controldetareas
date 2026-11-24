@@ -8,7 +8,7 @@
 -- bucket "tareas-escolares" (por ejemplo permitir-powerpoint.sql).
 -- =====================================================================
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('tareas-escolares', 'tareas-escolares', false, 10485760, ARRAY[
+VALUES ('tareas-escolares', 'tareas-escolares', false, 20971520, ARRAY[
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -33,5 +33,5 @@ ON CONFLICT (id) DO UPDATE
 
 -- Comprobar: las dos columnas deben salir true
 SELECT 'application/vnd.ms-access' = ANY (allowed_mime_types) AS access_permitido,
-       file_size_limit = 10485760                              AS limite_10mb
+       file_size_limit = 20971520                              AS limite_10mb
 FROM storage.buckets WHERE id = 'tareas-escolares';
